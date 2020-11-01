@@ -7,13 +7,17 @@ pr:
   branches:
     include:
     - dev
-    - release/*
+    - release/3.0
+    - release/3.0-hotfix-85
+    - release/ExtensionsMetadataGenerator/1.1
 
 trigger:
   branches:
     include:
     - dev
-    - release/*
+    - release/3.0
+    - release/3.0-hotfix-85
+    - release/ExtensionsMetadataGenerator/1.1
 
 jobs:
 - job: InitializePipeline
@@ -37,7 +41,7 @@ jobs:
   dependsOn: InitializePipeline
   condition: and(succeeded(), or(ne(variables['Build.Reason'], 'PullRequest'), eq(dependencies.InitializePipeline.outputs['Initialize.BuildArtifacts'], true)))
   variables:
-    ${{ if or( eq( variables['Build.Reason'], 'PullRequest' ), and( not( endswith( variables['Build.SourceBranch'], 'release/3.0' ) ), not( endswith( variables['Build.SourceBranch'], 'release/3.0-hotfix-79' ) ), not( endswith( variables['Build.SourceBranch'], 'release/ExtensionsMetadataGenerator/1.1' ) ) ) ) }}:
+    ${{ if or( eq( variables['Build.Reason'], 'PullRequest' ), and( not( endswith( variables['Build.SourceBranch'], 'release/3.0-hotfix-85' ) ), not( endswith( variables['Build.SourceBranch'], 'release/ExtensionsMetadataGenerator/1.1' ) ) ) ) }}:
       suffixTemp: ci
       packSuffixSwitchTemp: --version-suffix ci
       emgSuffixSwitchTemp: --version-suffix ci$(buildNumber)
@@ -406,7 +410,7 @@ jobs:
     inputs:
       command: 'test'
       testRunTitle: "Node end to end tests"
-      arguments: '--filter "Group=NodeEndToEndTests"'
+      arguments: '--filter "Group=NodeEndToEndTests" --no-build'
       projects: |
         **\WebJobs.Script.Tests.Integration.csproj
   - task: DotNetCoreCLI@2
@@ -415,7 +419,7 @@ jobs:
     inputs:
       command: 'test'
       testRunTitle: "Direct load end to end tests"
-      arguments: '--filter "Group=DirectLoadEndToEndTests"'
+      arguments: '--filter "Group=DirectLoadEndToEndTests" --no-build'
       projects: |
         **\WebJobs.Script.Tests.Integration.csproj
   - task: DotNetCoreCLI@2
@@ -424,7 +428,7 @@ jobs:
     inputs:
       command: 'test'
       testRunTitle: "F# end to end tests"
-      arguments: '--filter "Group=FSharpEndToEndTests"'
+      arguments: '--filter "Group=FSharpEndToEndTests" --no-build'
       projects: |
         **\WebJobs.Script.Tests.Integration.csproj
   - task: DotNetCoreCLI@2
@@ -433,7 +437,7 @@ jobs:
     inputs:
       command: 'test'
       testRunTitle: "Language worker end to end tests"
-      arguments: '--filter "Group=LanguageWorkerSelectionEndToEndTests"'
+      arguments: '--filter "Group=LanguageWorkerSelectionEndToEndTests" --no-build'
       projects: |
         **\WebJobs.Script.Tests.Integration.csproj
   - task: DotNetCoreCLI@2
@@ -442,7 +446,7 @@ jobs:
     inputs:
       command: 'test'
       testRunTitle: "Node script host end to end tests"
-      arguments: '--filter "Group=NodeScriptHostTests"'
+      arguments: '--filter "Group=NodeScriptHostTests" --no-build'
       projects: |
         **\WebJobs.Script.Tests.Integration.csproj
   - task: DotNetCoreCLI@2
@@ -451,16 +455,16 @@ jobs:
     inputs:
       command: 'test'
       testRunTitle: "Raw assembly end to end tests"
-      arguments: '--filter "Group=RawAssemblyEndToEndTests"'
+      arguments: '--filter "Group=RawAssemblyEndToEndTests" --no-build'
       projects: |
-        **\WebJobs.Script.Tests.Integration.csproj                        
+        **\WebJobs.Script.Tests.Integration.csproj
   - task: DotNetCoreCLI@2
     displayName: "Samples end to end tests"    
     condition: succeededOrFailed()
     inputs:
       command: 'test'
       testRunTitle: "Samples end to end tests"
-      arguments: '--filter "Group=SamplesEndToEndTests"'
+      arguments: '--filter "Group=SamplesEndToEndTests" --no-build'
       projects: |
         **\WebJobs.Script.Tests.Integration.csproj
   - task: DotNetCoreCLI@2
@@ -469,7 +473,7 @@ jobs:
     inputs:
       command: 'test'
       testRunTitle: "Standby mode end to end tests Windows"
-      arguments: '--filter "Group=StandbyModeEndToEndTests_Windows"'
+      arguments: '--filter "Group=StandbyModeEndToEndTests_Windows" --no-build'
       projects: |
         **\WebJobs.Script.Tests.Integration.csproj
   - task: DotNetCoreCLI@2
@@ -478,7 +482,7 @@ jobs:
     inputs:
       command: 'test'
       testRunTitle: "Standby mode end to end tests Linux"
-      arguments: '--filter "Group=StandbyModeEndToEndTests_Linux"'
+      arguments: '--filter "Group=StandbyModeEndToEndTests_Linux" --no-build'
       projects: |
         **\WebJobs.Script.Tests.Integration.csproj
   - task: DotNetCoreCLI@2
@@ -487,7 +491,7 @@ jobs:
     inputs:
       command: 'test'
       testRunTitle: "Linux container end to end tests Windows"
-      arguments: '--filter "Group=ContainerInstanceTests"'
+      arguments: '--filter "Group=ContainerInstanceTests" --no-build'
       projects: |
         **\WebJobs.Script.Tests.Integration.csproj
   - task: PowerShell@2

@@ -120,6 +120,7 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.HttpWorker
             Dictionary<string, object> bindingData = new Dictionary<string, object>();
             bindingData["dequeueCount"] = 4;
             bindingData["VisibleTime"] = new DateTime(2019, 10, 1);
+            bindingData["VisibleTimeOffset"] = new DateTimeOffset(new DateTime(2019, 10, 1));
             bindingData["helloString"] = "helloMetadata";
             return bindingData;
         }
@@ -175,6 +176,14 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.HttpWorker
         public static HttpResponseMessage GetHttpResponseMessageWithStringContent()
         {
             return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("TestMessage") };
+        }
+
+        public static HttpResponseMessage GetValidHttpResponseMessage_JsonType_InvalidContent()
+        {
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("Hello World", Encoding.UTF8, "application/json")
+            };
         }
 
         public static List<(string name, DataType type, object val)> GetScriptInvocationInputs()

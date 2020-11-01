@@ -1,7 +1,10 @@
+#!/usr/bin/env pwsh
+
 [CmdletBinding()]
 param (
     [bool]$InstallDotNet = $true,
-    [bool]$InstallCrankAgent = $true
+    [bool]$InstallCrankAgent = $true,
+    [string]$CrankBranch
 )
 
 $ErrorActionPreference = 'Stop'
@@ -22,12 +25,74 @@ function InstallDotNet {
     }
 }
 
-function InstallCrankAgent {
+function New-TemporaryDirectory {
+    $parent = [System.IO.Path]::GetTempPath()
+    $name = [System.Guid]::NewGuid()
+    New-Item -ItemType Directory -Path (Join-Path $parent $name)
+}
+
+function BuildCrankAgent($BranchOrCommit) {
+    Write-Verbose "Cloning crank repo..."
+    git clone https://github.com/dotnet/crank.git > $null
+    git checkout $BranchOrCommit
+    Set-Location crank
+
+    $logFileName = 'build.log'
+    Write-Verbose "Building crank (see $(Join-Path -Path $PWD -ChildPath $logFileName))..."
+    $buildCommand = $IsWindows ? '.\build.cmd' : './build.sh'
+    & $buildCommand -configuration Release -pack > $logFileName
+
+    Join-Path -Path $PWD -ChildPath "artifacts/packages/Release/Shipping"
+}
+
+function GetDotNetToolsLocationArgs {
+    $IsWindows ? ('--tool-path', 'c:\dotnet-tools') : '-g'
+}
+
+function InstallCrankAgentTool($LocalPackageSource) {
+    Write-Verbose 'Stopping crank-agent...'
+
+    $crankAgentProcessName = 'crank-agent'
+    if (Get-Process -Name $crankAgentProcessName -ErrorAction SilentlyContinue) {
+        Stop-Process -Name $crankAgentProcessName -Force
+    }
+
+    Write-Verbose 'Uninstalling crank-agent...'
+
+    $uninstallArgs = 'tool', 'uninstall', 'Microsoft.Crank.Agent'
+    $uninstallArgs += GetDotNetToolsLocationArgs
+    & dotnet $uninstallArgs
+
     Write-Verbose 'Installing crank-agent...'
-    if ($IsWindows) {
-        dotnet tool install --tool-path c:\dotnet-tools Microsoft.Crank.Agent --version "0.1.0-*"
+
+    $installArgs =
+        'tool', 'install', 'Microsoft.Crank.Agent',
+        '--version', '0.1.0-*'
+
+    $installArgs += GetDotNetToolsLocationArgs
+
+    if ($LocalPackageSource) {
+        $installArgs += '--add-source', $LocalPackageSource
+    }
+
+    & dotnet $installArgs
+}
+
+function InstallCrankAgent {
+    if ($CrankBranch) {
+        $tempDir = New-TemporaryDirectory
+        Write-Verbose "Creating temporary directory: $($tempDir.FullName)"
+        Push-Location -Path $tempDir.FullName
+        try {
+            $packagesDirectory = BuildCrankAgent -BranchOrCommit $CrankBranch
+            InstallCrankAgentTool -LocalPackageSource $packagesDirectory
+        } finally {
+            Pop-Location
+            Write-Verbose "Removing temporary directory: $($tempDir.FullName)"
+            Remove-Item $tempDir.FullName -Recurse -Force -ErrorAction Ignore
+        }
     } else {
-        dotnet tool install -g Microsoft.Crank.Agent --version "0.1.0-*"
+        InstallCrankAgentTool
     }
 }
 

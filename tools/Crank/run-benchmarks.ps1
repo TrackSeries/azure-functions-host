@@ -25,7 +25,16 @@ param(
     $UserName = 'Functions',
 
     [bool]
-    $UseHttps = $true
+    $Trace = $false,
+
+    [int]
+    $Duration = 15,
+
+    [int]
+    $Warmup = 15,
+
+    [int]
+    $Iterations = 1
 )
 
 $ErrorActionPreference = 'Stop'
@@ -64,33 +73,32 @@ $crankConfigPath = Join-Path `
 
 $isLinuxApp = $CrankAgentVm -match '\blinux\b'
 
-$functionAppRootPath = if ($isLinuxApp) { "/home/$UserName/FunctionApps" } else { 'C:\FunctionApps' }
-$functionAppPath = Join-Path `
-                    -Path $functionAppRootPath `
-                    -ChildPath $FunctionApp
-
-$tmpPath = if ($isLinuxApp) { "/tmp" } else { 'C:\Temp' }
+$homePath = if ($isLinuxApp) { "/home/$UserName/FunctionApps/$FunctionApp" } else { "C:\FunctionApps\$FunctionApp" }
+$functionAppPath = if ($isLinuxApp) { "/home/$UserName/FunctionApps/$FunctionApp/site/wwwroot" } else { "C:\FunctionApps\$FunctionApp\site\wwwroot" }
 $tmpLogPath = if ($isLinuxApp) { "/tmp/functions/log" } else { 'C:\Temp\Functions\Log' }
 
-if ($UseHttps) {
-    $aspNetUrls = "http://localhost:5000;https://localhost:5001"
-    $profile = "localHttps"
-}
-else {
-    $aspNetUrls = "http://localhost:5000"
-    $profile = "local"
-}
+ $aspNetUrls = "http://localhost:5000"
+ $profileName = "default"
 
 $crankArgs =
     '--config', $crankConfigPath,
     '--scenario', $Scenario,
-    '--profile', $profile,
+    '--profile', $profileName,
+    '--chart',
+    '--chart-type hex',
+    '--application.collectCounters', $true,
     '--variable', "CrankAgentVm=$CrankAgentVm",
     '--variable', "FunctionAppPath=`"$functionAppPath`"",
-    '--variable', "TempPath=`"$tmpPath`"",
+    '--variable', "HomePath=`"$homePath`"",
     '--variable', "TempLogPath=`"$tmpLogPath`"",
     '--variable', "BranchOrCommit=$BranchOrCommit",
+    '--variable', "duration=$Duration",
+    '--variable', "warmup=$Warmup",
     '--variable', "AspNetUrls=$aspNetUrls"
+
+if ($Trace) {
+    $crankArgs += '--application.collect', $true
+}
 
 if ($WriteResultsToDatabase) {
     Set-AzContext -Subscription 'Antares-Demo' > $null
@@ -102,6 +110,19 @@ if ($WriteResultsToDatabase) {
     $crankArgs += '--table', 'FunctionsPerf'
 }
 
-& $InvokeCrankCommand $crankArgs
+if ($Iterations -gt 1) {
+    $crankArgs += '--iterations', $Iterations
+    $crankArgs += '--display-iterations'
+}
+
+& $InvokeCrankCommand $crankArgs 2>&1 | Tee-Object -Variable crankOutput
+
+$badResponses = $crankOutput | Where-Object { $_ -match '\bBad responses\b\s*\|\s*(\S*)\s' } | ForEach-Object { $Matches[1] }
+if ($null -eq $badResponses) {
+    Write-Warning "Could not detect the number of bad responses. The performance results may be unreliable."
+}
+if ($badResponses -ne 0) {
+    Write-Warning "Detected $badResponses bad response(s). The performance results may be unreliable."
+}
 
 #endregion

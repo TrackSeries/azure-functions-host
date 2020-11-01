@@ -15,6 +15,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Azure.WebJobs.Host;
 using Microsoft.Azure.WebJobs.Logging;
 using Microsoft.Azure.WebJobs.Script.Description;
 using Microsoft.Azure.WebJobs.Script.Workers.Rpc;
@@ -32,7 +33,7 @@ namespace Microsoft.Azure.WebJobs.Script
         // i.e.: "f-<functionname>"
         public const string AssemblyPrefix = "f-";
         public const string AssemblySeparator = "__";
-        private static readonly Regex FunctionNameValidationRegex = new Regex(@"^[a-z][a-z0-9_\-]{0,127}$(?<!^host$)", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        private static readonly Regex FunctionNameValidationRegex = new Regex(@"^[a-z][a-z0-9_\-]{0,127}$(?<!^host$)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
         private static readonly string UTF8ByteOrderMark = Encoding.UTF8.GetString(Encoding.UTF8.GetPreamble());
         private static readonly FilteredExpandoObjectConverter _filteredExpandoObjectConverter = new FilteredExpandoObjectConverter();
@@ -755,8 +756,44 @@ namespace Microsoft.Azure.WebJobs.Script
 
         public static bool IsMediaTypeOctetOrMultipart(MediaTypeHeaderValue mediaType)
         {
-                return mediaType != null && (string.Equals(mediaType.MediaType, ScriptConstants.MediatypeOctetStream, StringComparison.OrdinalIgnoreCase) ||
-                                mediaType.MediaType.IndexOf(ScriptConstants.MediatypeMutipartPrefix, StringComparison.OrdinalIgnoreCase) >= 0);
+            return mediaType != null && (string.Equals(mediaType.MediaType, ScriptConstants.MediatypeOctetStream, StringComparison.OrdinalIgnoreCase) ||
+                            mediaType.MediaType.IndexOf(ScriptConstants.MediatypeMutipartPrefix, StringComparison.OrdinalIgnoreCase) >= 0);
+        }
+
+        public static void ValidateRetryOptions(RetryOptions
+            retryOptions)
+        {
+            if (retryOptions == null)
+            {
+                return;
+            }
+            if (!retryOptions.MaxRetryCount.HasValue)
+            {
+                throw new ArgumentNullException(nameof(retryOptions.MaxRetryCount));
+            }
+            switch (retryOptions.Strategy)
+            {
+                case RetryStrategy.FixedDelay:
+                    if (!retryOptions.DelayInterval.HasValue)
+                    {
+                        throw new ArgumentNullException(nameof(retryOptions.DelayInterval));
+                    }
+                    // ensure values specified to create FixedDelayRetryAttribute are valid
+                    _ = new FixedDelayRetryAttribute(retryOptions.MaxRetryCount.Value, retryOptions.DelayInterval.ToString());
+                    break;
+                case RetryStrategy.ExponentialBackoff:
+                    if (!retryOptions.MinimumInterval.HasValue)
+                    {
+                        throw new ArgumentNullException(nameof(retryOptions.DelayInterval));
+                    }
+                    if (!retryOptions.MaximumInterval.HasValue)
+                    {
+                        throw new ArgumentNullException(nameof(retryOptions.DelayInterval));
+                    }
+                    // ensure values specified to create ExponentialBackoffRetryAttribute are valid
+                    _ = new ExponentialBackoffRetryAttribute(retryOptions.MaxRetryCount.Value, retryOptions.MinimumInterval.ToString(), retryOptions.MaximumInterval.ToString());
+                    break;
+            }
         }
 
         private class FilteredExpandoObjectConverter : ExpandoObjectConverter

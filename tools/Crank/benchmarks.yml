@@ -26,38 +26,33 @@ scenarios:
       job: bombardier
       variables:
         path: /api/Hello
-        duration: 180
   http-appsvc:
     application:
       job: functionsServer
       environmentVariables:
-        HOME: "{{ TempPath }}"
+        HOME: "{{ HomePath }}"
         WEBSITE_SITE_NAME: "Test"
         WEBSITE_INSTANCE_ID: "8399B720-AB73-46D6-94DE-5A27871B3155"
         WEBSITE_OWNER_NAME: "A5F47496-A284-4788-A127-E79454330567+westuswebspace"
-        AzureWebJobsScriptRoot: "{{ FunctionAppPath }}"
         ASPNETCORE_URLS: "{{ AspNetUrls }}"
     load:
       job: bombardier
       variables:
         path: /api/Hello
-        duration: 180
   http-linux-appsvc:
     application:
       job: functionsServer
       environmentVariables:
-        HOME: "{{ TempPath }}"
+        HOME: "{{ HomePath }}"
         WEBSITE_SITE_NAME: "Test"
         WEBSITE_INSTANCE_ID: "8399B720-AB73-46D6-94DE-5A27871B3155"
         WEBSITE_OWNER_NAME: "A5F47496-A284-4788-A127-E79454330567+westuswebspace"
         FUNCTIONS_LOGS_MOUNT_PATH: "{{ TempLogPath }}"
-        AzureWebJobsScriptRoot: "{{ FunctionAppPath }}"
         ASPNETCORE_URLS: "{{ AspNetUrls }}"
     load:
       job: bombardier
       variables:
         path: /api/Hello
-        duration: 180
   aspnet-hello:
     application:
       job: aspnetServer
@@ -67,21 +62,9 @@ scenarios:
       job: bombardier
       variables:
         path: /api/Hello
-        duration: 180
 
 profiles:
-  localHttps:
-    variables:
-      serverUri: https://localhost
-      serverPort: 5001
-    jobs: 
-      application:
-        endpoints: 
-          - "http://{{ CrankAgentVm }}:5010"
-      load:
-        endpoints: 
-          - "http://{{ CrankAgentVm }}:5010"
-  local:
+  default:
     variables:
       serverUri: http://localhost
       serverPort: 5000
