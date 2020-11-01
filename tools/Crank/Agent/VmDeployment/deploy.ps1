@@ -10,9 +10,15 @@ param (
     [string]
     $BaseName,
 
+    [string[]]
+    $NamePostfixes = @('-app', '-load'),
+
     [Parameter(Mandatory = $true)]
     [ValidateSet('Linux', 'Windows')]
     $OsType,
+
+    [switch]
+    $Docker,
 
     [string]
     $VmSize = 'Standard_E2s_v3',
@@ -21,41 +27,28 @@ param (
     $OsDiskType = 'Premium_LRS',
 
     [string]
-    $Location = 'West Central US'
+    $Location = 'West Central US',
+
+    [string]
+    $UserName = 'Functions'
 )
 
 $ErrorActionPreference = 'Stop'
 
-if ($OsType -ne 'Linux') {
-    throw 'Only Linux is supported now'
+$NamePostfixes | ForEach-Object -Parallel {
+    & "$using:PSScriptRoot/deploy-vm.ps1" `
+        -SubscriptionName $using:SubscriptionName `
+        -BaseName $using:BaseName `
+        -NamePostfix $_ `
+        -OsType $using:OsType `
+        -Docker:$using:Docker `
+        -VmSize $using:VmSize `
+        -OsDiskType $using:OsDiskType `
+        -Location $using:Location `
+        -UserName $using:UserName `
+        -Verbose:$using:VerbosePreference
 }
 
-$resourceGroupName = "FunctionsCrank-$OsType-$BaseName"
-$vmName = "functions-crank-$OsType-$BaseName".ToLower()
-Write-Verbose "Creating VM '$vmName' in resource group '$resourceGroupName'"
-
-Set-AzContext -Subscription $SubscriptionName | Out-Null
-
-New-AzResourceGroup -Name $resourceGroupName -Location $Location | Out-Null
-
-$vaultSubscriptionId = (Get-AzSubscription -SubscriptionName 'Antares-Demo').Id
-
-New-AzResourceGroupDeployment `
-    -ResourceGroupName $resourceGroupName `
-    -TemplateFile .\template.json `
-    -TemplateParameterObject @{
-        vmName = $vmName
-        dnsLabelPrefix = $vmName
-        vmSize = $VmSize
-        osDiskType = $OsDiskType
-        adminUsername = 'Functions'
-        authenticationType = 'sshPublicKey'
-        vaultName = 'functions-crank-kv'
-        vaultResourceGroupName = 'FunctionsCrank'
-        vaultSubscription = $vaultSubscriptionId
-        secretName = 'LinuxCrankAgentVmSshKey-Public'
-    }
-
-Write-Verbose 'Restarting the VM...'
-Restart-AzVM -ResourceGroupName $resourceGroupName -Name $vmName | Out-Null
-Start-Sleep -Seconds 30
+# TODO: remove this warning when app deployment is automated
+$appPath = if ($OsType -eq 'Linux') { "/home/$UserName/FunctionApps" } else { 'C:\FunctionApps' }
+Write-Warning "Remember to deploy the Function apps to $appPath"

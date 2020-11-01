@@ -3,6 +3,7 @@
 
 using System;
 using Xunit;
+using static Microsoft.Azure.WebJobs.Script.EnvironmentSettingNames;
 
 namespace Microsoft.Azure.WebJobs.Script.Tests.Extensions
 {
@@ -37,6 +38,22 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Extensions
             }
 
             Assert.Equal(expected, EnvironmentExtensions.IsVMSS(env));
+        }
+
+        [Theory]
+        [InlineData(null, true)]
+        [InlineData("", false)]
+        [InlineData("Foo,FunctionAppLogs,Bar", true)]
+        [InlineData("Foo,Bar", false)]
+        public void IsAzureMonitorEnabled_ReturnsExpectedResult(string value, bool expected)
+        {
+            IEnvironment env = new TestEnvironment();
+            if (value != null)
+            {
+                env.SetEnvironmentVariable(EnvironmentSettingNames.AzureMonitorCategories, value);
+            }
+
+            Assert.Equal(expected, EnvironmentExtensions.IsAzureMonitorEnabled(env));
         }
 
         [Theory]
@@ -144,6 +161,19 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Extensions
             }
 
             Assert.Equal(expected, EnvironmentExtensions.IsV2CompatibilityMode(env));
+        }
+
+        [Theory]
+        [InlineData("k8se-apps-ns", "10.0.0.1", true)]
+        [InlineData("k8se-apps", null, false)]
+        [InlineData(null, "10.0.0.1", false)]
+        [InlineData(null, null, false)]
+        public void IsKubernetesManagedHosting_ReturnsExpectedResult(string podNamespace, string kubernetesServiceHost, bool expected)
+        {
+            var environment = new TestEnvironment();
+            environment.SetEnvironmentVariable(KubernetesServiceHost, kubernetesServiceHost);
+            environment.SetEnvironmentVariable(PodNamespace, podNamespace);
+            Assert.Equal(expected, environment.IsKubernetesManagedHosting());
         }
     }
 }

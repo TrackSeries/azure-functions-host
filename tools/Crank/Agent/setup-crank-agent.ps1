@@ -4,7 +4,9 @@
 param (
     [bool]$InstallDotNet = $true,
     [bool]$InstallCrankAgent = $true,
-    [string]$CrankBranch
+    [string]$CrankBranch,
+    [bool]$Docker = $false,
+    [pscredential]$WindowsLocalAdmin
 )
 
 $ErrorActionPreference = 'Stop'
@@ -15,7 +17,9 @@ function InstallDotNet {
     Write-Verbose 'Installing dotnet...'
     if ($IsWindows) {
         Invoke-WebRequest 'https://raw.githubusercontent.com/dotnet/cli/master/scripts/obtain/dotnet-install.ps1' -OutFile 'dotnet-install.ps1'
-        ./dotnet-install.ps1
+        $dotnetInstallDir = "$env:ProgramFiles\dotnet"
+        ./dotnet-install.ps1 -InstallDir $dotnetInstallDir
+        [Environment]::SetEnvironmentVariable("Path", $env:Path + ";$dotnetInstallDir\;", 'Machine')
     } else {
         # From https://docs.microsoft.com/dotnet/core/install/linux-ubuntu#install-the-sdk
         sudo apt-get update
@@ -25,24 +29,21 @@ function InstallDotNet {
     }
 }
 
-function New-TemporaryDirectory {
-    $parent = [System.IO.Path]::GetTempPath()
-    $name = [System.Guid]::NewGuid()
-    New-Item -ItemType Directory -Path (Join-Path $parent $name)
-}
+function BuildCrankAgent($CrankRepoPath) {
+    Push-Location $CrankRepoPath
+    try {
+        $logFileName = 'build.log'
+        Write-Verbose "Building crank (see $(Join-Path -Path $PWD -ChildPath $logFileName))..."
+        $buildCommand = $IsWindows ? '.\build.cmd' : './build.sh'
+        & $buildCommand -configuration Release -pack > $logFileName
+        if (-not $?) {
+            throw "Crank build failed, exit code: $LASTEXITCODE"
+        }
 
-function BuildCrankAgent($BranchOrCommit) {
-    Write-Verbose "Cloning crank repo..."
-    git clone https://github.com/dotnet/crank.git > $null
-    git checkout $BranchOrCommit
-    Set-Location crank
-
-    $logFileName = 'build.log'
-    Write-Verbose "Building crank (see $(Join-Path -Path $PWD -ChildPath $logFileName))..."
-    $buildCommand = $IsWindows ? '.\build.cmd' : './build.sh'
-    & $buildCommand -configuration Release -pack > $logFileName
-
-    Join-Path -Path $PWD -ChildPath "artifacts/packages/Release/Shipping"
+        Join-Path -Path $PWD -ChildPath "artifacts/packages/Release/Shipping"
+    } finally {
+        Pop-Location
+    }
 }
 
 function GetDotNetToolsLocationArgs {
@@ -75,31 +76,69 @@ function InstallCrankAgentTool($LocalPackageSource) {
         $installArgs += '--add-source', $LocalPackageSource
     }
 
+    Write-Verbose "Invoking dotnet with arguments: $installArgs"
     & dotnet $installArgs
 }
 
+function EnsureDirectoryExists($Path) {
+    if (-not (Test-Path -PathType Container -Path $Path)) {
+        New-Item -ItemType Directory -Path $Path | Out-Null
+    }
+}
+
+function CloneCrankRepo {
+    Write-Verbose "Cloning crank repo..."
+    $githubParent = $IsLinux ? '~' : 'C:\'
+    $githubPath = Join-Path -Path $githubParent -ChildPath 'github'
+    EnsureDirectoryExists $githubPath
+    Push-Location -Path $githubPath
+    try {
+        git clone https://github.com/dotnet/crank.git | Out-Null
+        Set-Location crank
+        if ($CrankBranch) {
+            git checkout $CrankBranch | Out-Null
+        }
+        $PWD.Path
+    } finally {
+        Pop-Location
+    }
+}
+
 function InstallCrankAgent {
-    if ($CrankBranch) {
-        $tempDir = New-TemporaryDirectory
-        Write-Verbose "Creating temporary directory: $($tempDir.FullName)"
-        Push-Location -Path $tempDir.FullName
+    $crankRepoPath = CloneCrankRepo
+
+    if ($Docker) {
+        Push-Location $crankRepoPath/docker/agent
         try {
-            $packagesDirectory = BuildCrankAgent -BranchOrCommit $CrankBranch
-            InstallCrankAgentTool -LocalPackageSource $packagesDirectory
+            # Build the docker-agent image
+            ./build.sh
+
+            # Build the functions-docker-agent image
+            Set-Location $PSScriptRoot/Linux/Docker
+            ./build.sh
         } finally {
             Pop-Location
-            Write-Verbose "Removing temporary directory: $($tempDir.FullName)"
-            Remove-Item $tempDir.FullName -Recurse -Force -ErrorAction Ignore
         }
     } else {
-        InstallCrankAgentTool
+        if ($CrankBranch) {
+            $packagesDirectory = BuildCrankAgent -CrankRepoPath $crankRepoPath
+            InstallCrankAgentTool -LocalPackageSource $packagesDirectory
+        } else {
+            InstallCrankAgentTool
+        }
+    }
+
+    if ($IsWindows) {
+        New-NetFirewallRule -DisplayName 'Crank Agent' -Group 'Crank' -LocalPort 5010 -Protocol TCP -Direction Inbound -Action Allow | Out-Null
+        New-NetFirewallRule -DisplayName 'Crank App & Load (inbound)' -Group 'Crank' -LocalPort 5000 -Protocol TCP -Direction Inbound -Action Allow | Out-Null
+        New-NetFirewallRule -DisplayName 'Crank App & Load (outbound)' -Group 'Crank' -LocalPort 5000 -Protocol TCP -Direction Outbound -Action Allow | Out-Null
     }
 }
 
 function ScheduleCrankAgentStartWindows($RunScriptPath, [pscredential]$Credential) {
     $taskName = 'CrankAgent'
 
-    if (Get-ScheduledTask -TaskName $taskName) {
+    if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
         Write-Warning "Task '$taskName' already exists, no changes performed"
     } else {
         $action = New-ScheduledTaskAction -Execute 'pwsh.exe' `
@@ -137,23 +176,46 @@ function ScheduleCrankAgentStartLinux($RunScriptPath) {
 }
 
 function ScheduleCrankAgentStart {
-    Write-Verbose 'Scheduling crank-agent start...'
+    if ($Docker) {
+        Write-Verbose 'Starting crank-agent...'
 
-    $scriptPath = Join-Path -Path (Split-Path $PSCommandPath -Parent) -ChildPath 'run-crank-agent.ps1'
-
-    if ($IsWindows) {
-        ScheduleCrankAgentStartWindows -RunScriptPath $scriptPath -Credential (Get-Credential)
+        $functionAppsPath = Join-Path -Path '~' -ChildPath 'FunctionApps'
+        EnsureDirectoryExists -Path $functionAppsPath
+        $helloAppPath = Join-Path -Path $functionAppsPath -ChildPath 'HelloApp'
+        EnsureDirectoryExists -Path $helloAppPath
+        
+        & "$PSScriptRoot/Linux/Docker/run.sh"
     } else {
-        ScheduleCrankAgentStartLinux -RunScriptPath $scriptPath
-    }
+        Write-Verbose 'Scheduling crank-agent start...'
 
-    Write-Warning 'Please reboot to start crank-agent'
+        $scriptPath = Join-Path -Path (Split-Path $PSCommandPath -Parent) -ChildPath 'run-crank-agent.ps1'
+
+        if ($IsWindows) {
+            ScheduleCrankAgentStartWindows -RunScriptPath $scriptPath -Credential $WindowsLocalAdmin
+        } else {
+            ScheduleCrankAgentStartLinux -RunScriptPath $scriptPath
+        }
+
+        Write-Warning 'Please reboot to start crank-agent'
+    }
+}
+
+function InstallDocker {
+    Write-Verbose 'Installing Docker...'
+    if ($IsWindows) {
+        throw 'Using Docker on Windows is not supported yet'
+    } else {
+        & "$PSScriptRoot/Linux/install-docker.sh"
+    }
 }
 
 #endregion
 
 #region Main
 
+Write-Verbose "WindowsLocalAdmin: '$($WindowsLocalAdmin.UserName)'"
+
+if ($Docker) { InstallDocker }
 if ($InstallDotNet) { InstallDotNet }
 if ($InstallCrankAgent) { InstallCrankAgent }
 ScheduleCrankAgentStart
