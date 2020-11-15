@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
@@ -13,7 +14,7 @@ using System.Xml;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
-using Microsoft.Azure.WebJobs.Script.Description;
+using Microsoft.Azure.WebJobs.Host.Executors;
 using Microsoft.Azure.WebJobs.Script.ExtensionBundle;
 using Microsoft.Azure.WebJobs.Script.Models;
 using Microsoft.Azure.WebJobs.Script.WebHost;
@@ -43,6 +44,24 @@ namespace Microsoft.Azure.WebJobs.Script.Tests
         private readonly TestLoggerProvider _webHostLoggerProvider = new TestLoggerProvider();
         private readonly TestLoggerProvider _scriptHostLoggerProvider = new TestLoggerProvider();
         private readonly WebJobsScriptHostService _hostService;
+
+        private readonly Timer _stillRunningTimer;
+        private readonly DateTimeOffset _created = DateTimeOffset.UtcNow;
+        private readonly string _createdStack;
+        private readonly string _id = Guid.NewGuid().ToString();
+        private bool _timerFired = false;
+        private bool _isDisposed = false;
+
+        public TestFunctionHost(string scriptPath,
+           Action<IServiceCollection> configureWebHostServices = null,
+           Action<IWebJobsBuilder> configureScriptHostWebJobsBuilder = null,
+           Action<IConfigurationBuilder> configureScriptHostAppConfiguration = null,
+           Action<ILoggingBuilder> configureScriptHostLogging = null,
+           Action<IServiceCollection> configureScriptHostServices = null)
+            : this(scriptPath, Path.Combine(Path.GetTempPath(), @"Functions"), configureWebHostServices, configureScriptHostWebJobsBuilder,
+                  configureScriptHostAppConfiguration, configureScriptHostLogging, configureScriptHostServices)
+        {
+        }
 
         public TestFunctionHost(string scriptPath, string logPath,
             Action<IServiceCollection> configureWebHostServices = null,
@@ -119,6 +138,7 @@ namespace Microsoft.Azure.WebJobs.Script.Tests
             _testServer = new TestServer(builder) { BaseAddress = new Uri("https://localhost/") };
 
             HttpClient = _testServer.CreateClient();
+            HttpClient.Timeout = TimeSpan.FromMinutes(5);
 
             var manager = _testServer.Host.Services.GetService<IScriptHostManager>();
             _hostService = manager as WebJobsScriptHostService;
@@ -128,6 +148,12 @@ namespace Microsoft.Azure.WebJobs.Script.Tests
             lifetime.ApplicationStopping.Register(async () => await _testServer.Host.StopAsync());
 
             StartAsync().GetAwaiter().GetResult();
+
+            _stillRunningTimer = new Timer(StillRunningCallback, _testServer, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
+
+            // store off a bit of the creation stack for easier debugging if this host doesn't shut down.
+            var stack = new StackTrace(true).ToString().Split(Environment.NewLine).Take(5);
+            _createdStack = string.Join($"{Environment.NewLine}    ", stack);
         }
 
         public IServiceProvider JobHostServices => _hostService.Services;
@@ -159,6 +185,39 @@ namespace Microsoft.Azure.WebJobs.Script.Tests
         public async Task RestartAsync(CancellationToken cancellationToken)
         {
             await _hostService.RestartHostAsync(cancellationToken);
+        }
+
+        private void StillRunningCallback(object state)
+        {
+            var idProvider = JobHostServices?.GetService<IHostIdProvider>();
+            var jobOptions = JobHostServices?.GetService<IOptions<ScriptJobHostOptions>>();
+
+            if (idProvider == null || jobOptions == null)
+            {
+                return;
+            }
+
+            var functions = jobOptions?.Value.Functions ?? new[] { "" };
+
+            string allowList = $"[{string.Join(", ", functions)}]";
+            string hostId = idProvider.GetHostIdAsync(CancellationToken.None).Result;
+
+            var ago = (int)(DateTime.UtcNow - _created).TotalSeconds;
+
+            // This helps debugging tests that may not be disposing their hosts.
+            StringBuilder sb = new StringBuilder();
+
+            sb.AppendLine($"A host created at '{_created:yyyy-MM-dd HH:mm:ss}' ({ago}s ago) is still running. Details:");
+            sb.AppendLine($"  Host id:      {hostId}");
+            sb.AppendLine($"  Test host id: {_id}");
+            sb.AppendLine($"  ScriptRoot:   {jobOptions.Value.RootScriptPath}");
+            sb.AppendLine($"  Allow list:   {allowList}");
+            sb.AppendLine($"  The captured stack from this test host's constructor:");
+            sb.AppendLine(_createdStack);
+
+            Console.Write(sb.ToString());
+
+            _timerFired = true;
         }
 
         private Task StartAsync()
@@ -275,8 +334,21 @@ namespace Microsoft.Azure.WebJobs.Script.Tests
 
         public void Dispose()
         {
-            HttpClient.Dispose();
-            _testServer.Dispose();
+            if (!_isDisposed)
+            {
+                HttpClient.Dispose();
+                _testServer.Dispose();
+
+                _stillRunningTimer?.Change(-1, -1);
+                _stillRunningTimer?.Dispose();
+
+                if (_timerFired)
+                {
+                    Console.WriteLine($"The test host with id {_id} is now disposed.");
+                }
+
+                _isDisposed = true;
+            }
         }
 
         private async Task<bool> IsHostStarted()
@@ -322,8 +394,7 @@ namespace Microsoft.Azure.WebJobs.Script.Tests
             var managerServiceProvider = manager as IServiceProvider;
 
             var metadataProvider = new FunctionMetadataProvider(optionsMonitor, NullLogger<FunctionMetadataProvider>.Instance, new TestMetricsLogger());
-            var metadataManager = new FunctionMetadataManager(managerServiceProvider.GetService<IOptions<ScriptJobHostOptions>>(),
-                metadataProvider, managerServiceProvider.GetService<IEnumerable<IFunctionProvider>>(),
+            var metadataManager = new FunctionMetadataManager(managerServiceProvider.GetService<IOptions<ScriptJobHostOptions>>(), metadataProvider,
                 managerServiceProvider.GetService<IOptions<HttpWorkerOptions>>(), manager, factory, new OptionsWrapper<LanguageWorkerOptions>(workerOptions));
 
             return metadataManager;

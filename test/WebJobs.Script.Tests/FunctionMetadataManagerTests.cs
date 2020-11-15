@@ -160,6 +160,66 @@ namespace Microsoft.Azure.WebJobs.Script.Tests
         }
 
         [Fact]
+        public void FunctionMetadataManager_IgnoresMetadata_FromFunctionProviders()
+        {
+            var functionMetadataCollection = new Collection<FunctionMetadata>();
+            var mockFunctionErrors = new Dictionary<string, ImmutableArray<string>>();
+
+            var mockFunctionMetadataProvider = new Mock<IFunctionMetadataProvider>();
+            var mockFunctionProvider = new Mock<IFunctionProvider>();
+            var workerConfigs = TestHelpers.GetTestWorkerConfigs();
+
+            mockFunctionMetadataProvider.Setup(m => m.GetFunctionMetadata(workerConfigs, false)).Returns(new Collection<FunctionMetadata>().ToImmutableArray());
+            mockFunctionMetadataProvider.Setup(m => m.FunctionErrors).Returns(new Dictionary<string, ICollection<string>>().ToImmutableDictionary(kvp => kvp.Key, kvp => kvp.Value.ToImmutableArray()));
+
+            functionMetadataCollection.Add(GetTestFunctionMetadata("somefile.dll", name: "anotherFunction"));
+
+            mockFunctionProvider.Setup(m => m.GetFunctionMetadataAsync()).ReturnsAsync(functionMetadataCollection.ToImmutableArray());
+            mockFunctionProvider.Setup(m => m.FunctionErrors).Returns(mockFunctionErrors.ToImmutableDictionary());
+
+            FunctionMetadataManager testFunctionMetadataManager = TestFunctionMetadataManager.GetFunctionMetadataManager(new OptionsWrapper<ScriptJobHostOptions>(_scriptJobHostOptions),
+                mockFunctionMetadataProvider.Object, new List<IFunctionProvider>() { mockFunctionProvider.Object }, new OptionsWrapper<HttpWorkerOptions>(_defaultHttpWorkerOptions), MockNullLoggerFactory.CreateLoggerFactory(), new OptionsWrapper<LanguageWorkerOptions>(TestHelpers.GetTestLanguageWorkerOptions()));
+
+            Assert.Equal(0, testFunctionMetadataManager.GetFunctionMetadata(true, includeCustomProviders: false).Length);
+            Assert.Equal(0, testFunctionMetadataManager.Errors.Count);
+        }
+
+        [Fact]
+        public void FunctionMetadataManager_SortsMetadata_FromFunctionProviders()
+        {
+            var functionMetadataCollection = new Collection<FunctionMetadata>();
+            var mockFunctionMetadataProvider = new Mock<IFunctionMetadataProvider>();
+            var mockFunctionProvider = new Mock<IFunctionProvider>();
+            var workerConfigs = TestHelpers.GetTestWorkerConfigs();
+
+            mockFunctionMetadataProvider.Setup(m => m.GetFunctionMetadata(workerConfigs, false)).Returns(new Collection<FunctionMetadata>().ToImmutableArray());
+            mockFunctionMetadataProvider.Setup(m => m.FunctionErrors).Returns(new Dictionary<string, ICollection<string>>().ToImmutableDictionary(kvp => kvp.Key, kvp => kvp.Value.ToImmutableArray()));
+
+            const string aFunction = "aFunction";
+            const string bFunction = "bFunction";
+            const string cFunction = "cFunction";
+
+            // Add in unsorted order
+            functionMetadataCollection.Add(GetTestFunctionMetadata("b.dll", name: bFunction));
+            functionMetadataCollection.Add(GetTestFunctionMetadata("a.dll", name: aFunction));
+            functionMetadataCollection.Add(GetTestFunctionMetadata("c.dll", name: cFunction));
+            functionMetadataCollection.Add(GetTestFunctionMetadata("null.dll", name: null));
+
+            mockFunctionProvider.Setup(m => m.GetFunctionMetadataAsync()).ReturnsAsync(functionMetadataCollection.ToImmutableArray());
+
+            FunctionMetadataManager testFunctionMetadataManager = TestFunctionMetadataManager.GetFunctionMetadataManager(new OptionsWrapper<ScriptJobHostOptions>(_scriptJobHostOptions),
+                mockFunctionMetadataProvider.Object, new List<IFunctionProvider>() { mockFunctionProvider.Object }, new OptionsWrapper<HttpWorkerOptions>(_defaultHttpWorkerOptions), MockNullLoggerFactory.CreateLoggerFactory(), new OptionsWrapper<LanguageWorkerOptions>(TestHelpers.GetTestLanguageWorkerOptions()));
+            var functionMetadata = testFunctionMetadataManager.LoadFunctionMetadata();
+
+            Assert.Equal(4, functionMetadata.Length);
+
+            Assert.Null(functionMetadata[0].Name);
+            Assert.True(string.Equals(aFunction, functionMetadata[1].Name));
+            Assert.True(string.Equals(bFunction, functionMetadata[2].Name));
+            Assert.True(string.Equals(cFunction, functionMetadata[3].Name));
+        }
+
+        [Fact]
         public void FunctionMetadataManager_ThrowsError_DuplicateFunctions_FromFunctionProviders()
         {
             var functionMetadataCollection = new Collection<FunctionMetadata>();
@@ -186,6 +246,50 @@ namespace Microsoft.Azure.WebJobs.Script.Tests
 
             var ex = Assert.Throws<InvalidOperationException>(() => testFunctionMetadataManager.LoadFunctionMetadata());
             Assert.Equal("Found duplicate FunctionMetadata with the name duplicateFunction", ex.Message);
+        }
+
+        [Fact]
+        public void FunctionMetadataManager_ResetProviders_OnRefresh()
+        {
+            var functionMetadataCollection = new Collection<FunctionMetadata>();
+            var mockFunctionErrors = new Dictionary<string, ImmutableArray<string>>();
+            var mockFunctionMetadataProvider = new Mock<IFunctionMetadataProvider>();
+            var mockFunctionProvider = new Mock<IFunctionProvider>();
+            var workerConfigs = TestHelpers.GetTestWorkerConfigs();
+
+            mockFunctionMetadataProvider.Setup(m => m.GetFunctionMetadata(workerConfigs, false)).Returns(new Collection<FunctionMetadata>().ToImmutableArray());
+            mockFunctionMetadataProvider.Setup(m => m.FunctionErrors).Returns(new Dictionary<string, ICollection<string>>().ToImmutableDictionary(kvp => kvp.Key, kvp => kvp.Value.ToImmutableArray()));
+
+            functionMetadataCollection.Add(GetTestFunctionMetadata("somefile.dll", name: "myFunction"));
+
+            mockFunctionProvider.Setup(m => m.GetFunctionMetadataAsync()).ReturnsAsync(functionMetadataCollection.ToImmutableArray());
+            mockFunctionProvider.Setup(m => m.FunctionErrors).Returns(mockFunctionErrors.ToImmutableDictionary());
+
+            var managerMock = new Mock<IScriptHostManager>();
+
+            FunctionMetadataManager testFunctionMetadataManager = TestFunctionMetadataManager.GetFunctionMetadataManager(new OptionsWrapper<ScriptJobHostOptions>(_scriptJobHostOptions), managerMock,
+                mockFunctionMetadataProvider.Object, new List<IFunctionProvider>() { mockFunctionProvider.Object }, new OptionsWrapper<HttpWorkerOptions>(_defaultHttpWorkerOptions), MockNullLoggerFactory.CreateLoggerFactory(), new OptionsWrapper<LanguageWorkerOptions>(TestHelpers.GetTestLanguageWorkerOptions()));
+
+            testFunctionMetadataManager.LoadFunctionMetadata();
+
+            Assert.Equal(0, testFunctionMetadataManager.Errors.Count);
+            Assert.Equal(1, testFunctionMetadataManager.GetFunctionMetadata(true).Length);
+            Assert.Equal("myFunction", testFunctionMetadataManager.GetFunctionMetadata(true).FirstOrDefault()?.Name);
+
+            functionMetadataCollection = new Collection<FunctionMetadata>
+            {
+                GetTestFunctionMetadata("somefile.dll", name: "newFunction")
+            };
+
+            mockFunctionProvider = new Mock<IFunctionProvider>();
+            mockFunctionProvider.Setup(m => m.GetFunctionMetadataAsync()).ReturnsAsync(functionMetadataCollection.ToImmutableArray());
+
+            managerMock.As<IServiceProvider>().Setup(m => m.GetService(typeof(IEnumerable<IFunctionProvider>))).Returns(new List<IFunctionProvider>() { mockFunctionProvider.Object });
+            testFunctionMetadataManager.LoadFunctionMetadata();
+
+            Assert.Equal(0, testFunctionMetadataManager.Errors.Count);
+            Assert.Equal(1, testFunctionMetadataManager.GetFunctionMetadata(true).Length);
+            Assert.Equal("newFunction", testFunctionMetadataManager.GetFunctionMetadata(true).FirstOrDefault()?.Name);
         }
 
         [Theory]

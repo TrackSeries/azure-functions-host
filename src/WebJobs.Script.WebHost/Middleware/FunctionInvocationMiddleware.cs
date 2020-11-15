@@ -26,15 +26,7 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost.Middleware
 {
     public class FunctionInvocationMiddleware
     {
-        private static RouteData _emptyRouteData;
-        private static ActionDescriptor _emptyActionDescriptor;
         private readonly RequestDelegate _next;
-
-        static FunctionInvocationMiddleware()
-        {
-            _emptyRouteData = new RouteData();
-            _emptyActionDescriptor = new ActionDescriptor();
-        }
 
         public FunctionInvocationMiddleware(RequestDelegate next)
         {
@@ -55,13 +47,13 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost.Middleware
                 IActionResult result = await GetResultAsync(context, functionExecution);
                 if (nestedProxiesCount > 0)
                 {
-                    // if Proxy, the rest of the pipleline will be processed by Proxies in
+                    // if Proxy, the rest of the pipeline will be processed by Proxies in
                     // case there are response overrides and what not.
                     SetProxyResult(context, nestedProxiesCount, result);
                     return;
                 }
 
-                ActionContext actionContext = new ActionContext(context, _emptyRouteData, _emptyActionDescriptor);
+                ActionContext actionContext = new ActionContext(context, context.GetRouteData(), new ActionDescriptor());
                 await result.ExecuteResultAsync(actionContext);
             }
         }
@@ -122,7 +114,7 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost.Middleware
                 // Add the request to the logging scope. This allows the App Insights logger to
                 // record details about the request.
                 ILoggerFactory loggerFactory = context.RequestServices.GetService<ILoggerFactory>();
-                ILogger logger = loggerFactory.CreateLogger(LogCategories.CreateFunctionCategory(functionExecution.Descriptor.Name));
+                ILogger logger = loggerFactory.CreateLogger(functionExecution.Descriptor.LogCategory);
                 var scopeState = new Dictionary<string, object>()
                 {
                     [ScriptConstants.LoggerHttpRequest] = context.Request,
@@ -133,6 +125,11 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost.Middleware
                     var applicationLifetime = context.RequestServices.GetService<IApplicationLifetime>();
                     CancellationToken cancellationToken = applicationLifetime != null ? applicationLifetime.ApplicationStopping : CancellationToken.None;
                     await functionExecution.ExecuteAsync(context.Request, cancellationToken);
+
+                    if (context.Items.TryGetValue(ScriptConstants.AzureFunctionsDuplicateHttpHeadersKey, out object value))
+                    {
+                        logger.LogDebug($"Duplicate HTTP header from function invocation removed. Duplicate key(s): {value?.ToString()}.");
+                    }
                 }
             }
 
@@ -194,7 +191,7 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost.Middleware
 
         internal static bool RequiresAuthz(HttpRequest request, FunctionDescriptor descriptor)
         {
-            if (descriptor.Metadata.IsProxy())
+            if (descriptor.Metadata.IsProxy() || descriptor.IsWarmupFunction())
             {
                 return false;
             }

@@ -18,7 +18,7 @@ package-lock.json
 
 /packages
 tools/ExtensionsMetadataGenerator/packages
-/TestResults
+TestResults/
 
 /tools/NuGet.exe
 /node_modules
@@ -26,3 +26,6 @@ tools/ExtensionsMetadataGenerator/packages
 /buildoutput
 /tools/ExtensionsMetadataGenerator/src/ExtensionsMetadataGenerator/runtimeassemblies.txt
 /tools/ExtensionsMetadataGenerator/test/ExtensionsMetadataGeneratorTests/runtimeAssemblies.txt
+
+local.settings.json
+msbuild.binlog

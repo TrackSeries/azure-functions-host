@@ -42,7 +42,6 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost.Controllers
         private readonly IScriptHostManager _scriptHostManager;
         private readonly IFunctionsSyncManager _functionsSyncManager;
         private readonly HostPerformanceManager _performanceManager;
-        private static int _warmupExecuted;
 
         public HostController(IOptions<ScriptApplicationHostOptions> applicationHostOptions,
             ILoggerFactory loggerFactory,
@@ -70,6 +69,9 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost.Controllers
                 State = scriptHostManager.State.ToString(),
                 Version = ScriptHost.Version,
                 VersionDetails = Utility.GetInformationalVersion(typeof(ScriptHost)),
+                PlatformVersion = _environment.GetAntaresVersion(),
+                InstanceId = _environment.GetInstanceId(),
+                ComputerName = _environment.GetAntaresComputerName(),
                 Id = await hostIdProvider.GetHostIdAsync(CancellationToken.None),
                 ProcessUptime = (long)(DateTime.UtcNow - Process.GetCurrentProcess().StartTime).TotalMilliseconds
             };
@@ -142,7 +144,7 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost.Controllers
         [Authorize(Policy = PolicyNames.AdminAuthLevelOrInternal)]
         [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
         [RequiresRunningHost]
-        public async Task<IActionResult> GetScaleStatus([FromBody] ScaleStatusContext context, [FromServices] FunctionsScaleManager scaleManager)
+        public async Task<IActionResult> GetScaleStatus([FromBody] ScaleStatusContext context, [FromServices] IScriptHostManager scriptHostManager)
         {
             // if runtime scale isn't enabled return error
             if (!_environment.IsRuntimeScaleMonitoringEnabled())
@@ -150,9 +152,20 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost.Controllers
                 return BadRequest("Runtime scale monitoring is not enabled.");
             }
 
-            var scaleStatus = await scaleManager.GetScaleStatusAsync(context);
-
-            return new ObjectResult(scaleStatus);
+            // TEMP: Once https://github.com/Azure/azure-functions-host/issues/5161 is fixed, we should take
+            // FunctionsScaleManager as a parameter.
+            if (Utility.TryGetHostService(scriptHostManager, out FunctionsScaleManager scaleManager))
+            {
+                var scaleStatus = await scaleManager.GetScaleStatusAsync(context);
+                return new ObjectResult(scaleStatus);
+            }
+            else
+            {
+                // This case should never happen. Because this action is marked RequiresRunningHost,
+                // it's only invoked when the host is running, and if it's running, we'll have access
+                // to the FunctionsScaleManager.
+                return StatusCode(StatusCodes.Status503ServiceUnavailable);
+            }
         }
 
         [HttpPost]
@@ -275,40 +288,6 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost.Controllers
             }
 
             return Accepted();
-        }
-
-        [HttpGet]
-        [HttpPost]
-        [Route("admin/warmup")]
-        [RequiresRunningHost]
-        public async Task<IActionResult> Warmup([FromServices] IScriptHostManager scriptHostManager)
-        {
-            // Endpoint only for Windows Elastic Premium or Linux App Service plans
-            if (!(_environment.IsLinuxAppService() || _environment.IsWindowsElasticPremium()))
-            {
-                return BadRequest("This API is not available for the current hosting plan");
-            }
-
-            if (Interlocked.CompareExchange(ref _warmupExecuted, 1, 0) != 0)
-            {
-                return Ok();
-            }
-
-            if (scriptHostManager is IServiceProvider serviceProvider)
-            {
-                IScriptJobHost jobHost = serviceProvider.GetService<IScriptJobHost>();
-
-                if (jobHost == null)
-                {
-                    _logger.LogError($"No active host available.");
-                    return StatusCode(503);
-                }
-
-                await jobHost.TryInvokeWarmupAsync();
-                return Ok();
-            }
-
-            return BadRequest("This API is not supported by the current hosting environment.");
         }
 
         [AcceptVerbs("GET", "POST", "DELETE")]

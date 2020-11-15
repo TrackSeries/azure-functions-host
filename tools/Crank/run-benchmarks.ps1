@@ -1,7 +1,11 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]
-    $CrankAgentVm,
+    $CrankAgentAppVm,
+
+    [Parameter(Mandatory = $true)]
+    [string]
+    $CrankAgentLoadVm,
 
     [string]
     $BranchOrCommit = 'dev',
@@ -25,7 +29,16 @@ param(
     $UserName = 'Functions',
 
     [bool]
-    $UseHttps = $true
+    $Trace = $false,
+
+    [int]
+    $Duration = 15,
+
+    [int]
+    $Warmup = 15,
+
+    [int]
+    $Iterations = 1
 )
 
 $ErrorActionPreference = 'Stop'
@@ -62,46 +75,71 @@ $crankConfigPath = Join-Path `
                     -Path (Split-Path $PSCommandPath -Parent) `
                     -ChildPath 'benchmarks.yml'
 
-$isLinuxApp = $CrankAgentVm -match '\blinux\b'
+$isLinuxApp = $CrankAgentAppVm -match '\blinux\b'
 
-$functionAppRootPath = if ($isLinuxApp) { "/home/$UserName/FunctionApps" } else { 'C:\FunctionApps' }
-$functionAppPath = Join-Path `
-                    -Path $functionAppRootPath `
-                    -ChildPath $FunctionApp
-
-$tmpPath = if ($isLinuxApp) { "/tmp" } else { 'C:\Temp' }
+$homePath = if ($isLinuxApp) { "/home/$UserName/FunctionApps/$FunctionApp" } else { "C:\FunctionApps\$FunctionApp" }
+$functionAppPath = if ($isLinuxApp) { "/home/$UserName/FunctionApps/$FunctionApp/site/wwwroot" } else { "C:\FunctionApps\$FunctionApp\site\wwwroot" }
 $tmpLogPath = if ($isLinuxApp) { "/tmp/functions/log" } else { 'C:\Temp\Functions\Log' }
 
-if ($UseHttps) {
-    $aspNetUrls = "http://localhost:5000;https://localhost:5001"
-    $profile = "localHttps"
+$aspNetUrls = "http://$($CrankAgentAppVm):5000"
+$profileName = "default"
+
+$patchedConfigFile = New-TemporaryFile |
+    ForEach-Object { Rename-Item -Path $_.FullName -NewName ($_.Name + '.yml') -PassThru }
+
+try {
+    # This is a temporary hack to work around a Crank issue: variables are not expanded in some contexts.
+    # So, we patch the config file with the required data.
+    Get-Content -Path $crankConfigPath |
+        ForEach-Object { $_ -replace 'serverUri: http://{{ CrankAgentAppVm }}', "serverUri: http://$CrankAgentAppVm" } |
+        Out-File -FilePath $patchedConfigFile.FullName
+
+    $crankArgs =
+        '--config', $patchedConfigFile.FullName,
+        '--scenario', $Scenario,
+        '--profile', $profileName,
+        '--chart',
+        '--chart-type hex',
+        '--application.collectCounters', $true,
+        '--variable', "CrankAgentAppVm=$CrankAgentAppVm",
+        '--variable', "CrankAgentLoadVm=$CrankAgentLoadVm",
+        '--variable', "FunctionAppPath=`"$functionAppPath`"",
+        '--variable', "HomePath=`"$homePath`"",
+        '--variable', "TempLogPath=`"$tmpLogPath`"",
+        '--variable', "BranchOrCommit=$BranchOrCommit",
+        '--variable', "duration=$Duration",
+        '--variable', "warmup=$Warmup",
+        '--variable', "AspNetUrls=$aspNetUrls"
+
+    if ($Trace) {
+        $crankArgs += '--application.collect', $true
+    }
+
+    if ($WriteResultsToDatabase) {
+        Set-AzContext -Subscription 'Antares-Demo' > $null
+        $sqlPassword = (Get-AzKeyVaultSecret -vaultName 'functions-crank-kv' -name 'SqlAdminPassword').SecretValueText
+
+        $sqlConnectionString = "Server=tcp:functions-crank-sql.database.windows.net,1433;Initial Catalog=functions-crank-db;Persist Security Info=False;User ID=Functions;Password=$sqlPassword;MultipleActiveResultSets=False;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;"
+
+        $crankArgs += '--sql', $sqlConnectionString
+        $crankArgs += '--table', 'FunctionsPerf'
+    }
+
+    if ($Iterations -gt 1) {
+        $crankArgs += '--iterations', $Iterations
+        $crankArgs += '--display-iterations'
+    }
+
+    & $InvokeCrankCommand $crankArgs 2>&1 | Tee-Object -Variable crankOutput
+} finally {
+    Remove-Item -Path $patchedConfigFile.FullName
 }
-else {
-    $aspNetUrls = "http://localhost:5000"
-    $profile = "local"
+
+$badResponses = $crankOutput | Where-Object { $_ -match '\bBad responses\b\s*\|\s*(\S*)\s' } | ForEach-Object { $Matches[1] }
+if ($null -eq $badResponses) {
+    Write-Warning "Could not detect the number of bad responses. The performance results may be unreliable."
+} elseif ($badResponses -ne 0) {
+    Write-Warning "Detected $badResponses bad response(s). The performance results may be unreliable."
 }
-
-$crankArgs =
-    '--config', $crankConfigPath,
-    '--scenario', $Scenario,
-    '--profile', $profile,
-    '--variable', "CrankAgentVm=$CrankAgentVm",
-    '--variable', "FunctionAppPath=`"$functionAppPath`"",
-    '--variable', "TempPath=`"$tmpPath`"",
-    '--variable', "TempLogPath=`"$tmpLogPath`"",
-    '--variable', "BranchOrCommit=$BranchOrCommit",
-    '--variable', "AspNetUrls=$aspNetUrls"
-
-if ($WriteResultsToDatabase) {
-    Set-AzContext -Subscription 'Antares-Demo' > $null
-    $sqlPassword = (Get-AzKeyVaultSecret -vaultName 'functions-crank-kv' -name 'SqlAdminPassword').SecretValueText
-
-    $sqlConnectionString = "Server=tcp:functions-crank-sql.database.windows.net,1433;Initial Catalog=functions-crank-db;Persist Security Info=False;User ID=Functions;Password=$sqlPassword;MultipleActiveResultSets=False;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;"
-
-    $crankArgs += '--sql', $sqlConnectionString
-    $crankArgs += '--table', 'FunctionsPerf'
-}
-
-& $InvokeCrankCommand $crankArgs
 
 #endregion

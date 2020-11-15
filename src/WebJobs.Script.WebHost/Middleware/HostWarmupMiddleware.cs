@@ -34,7 +34,11 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost.Middleware
         {
             if (IsWarmUpRequest(httpContext.Request, _webHostEnvironment.InStandbyMode, _environment))
             {
-                PreJitPrepare();
+                PreJitPrepare(WarmUpConstants.JitTraceFileName);
+                if (_environment.IsLinuxConsumption())
+                {
+                    PreJitPrepare(WarmUpConstants.LinuxJitTraceFileName);
+                }
 
                 await WarmUp(httpContext.Request);
             }
@@ -42,7 +46,7 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost.Middleware
             await _next.Invoke(httpContext);
         }
 
-        private void PreJitPrepare()
+        private void PreJitPrepare(string jitTraceFileName)
         {
             // This is to PreJIT all methods captured in coldstart.jittrace file to improve cold start time
             var path = Path.Combine(Path.GetDirectoryName(new Uri(typeof(HostWarmupMiddleware).Assembly.Location).LocalPath), WarmUpConstants.PreJitFolderName, WarmUpConstants.JitTraceFileName);
@@ -55,7 +59,8 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost.Middleware
 
                 // We will need to monitor failed vs success prepares and if the failures increase, it means code paths have diverged or there have been updates on dotnet core side.
                 // When this happens, we will need to regenerate the coldstart.jittrace file.
-                _logger.LogInformation(new EventId(100, "PreJit"), $"PreJIT Successful prepares: {successfulPrepares}, Failed prepares: {failedPrepares}");
+                _logger.LogInformation(new EventId(100, "PreJit"),
+                    $"PreJIT Successful prepares: {successfulPrepares}, Failed prepares: {failedPrepares} FileName = {jitTraceFileName}");
             }
         }
 

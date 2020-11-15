@@ -15,9 +15,12 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Azure.WebJobs.Logging;
 using Microsoft.Azure.WebJobs.Script.Description;
+using Microsoft.Azure.WebJobs.Script.Diagnostics.Extensions;
 using Microsoft.Azure.WebJobs.Script.Workers.Rpc;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Converters;
@@ -32,7 +35,7 @@ namespace Microsoft.Azure.WebJobs.Script
         // i.e.: "f-<functionname>"
         public const string AssemblyPrefix = "f-";
         public const string AssemblySeparator = "__";
-        private static readonly Regex FunctionNameValidationRegex = new Regex(@"^[a-z][a-z0-9_\-]{0,127}$(?<!^host$)", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        private static readonly Regex FunctionNameValidationRegex = new Regex(@"^[a-z][a-z0-9_\-]{0,127}$(?<!^host$)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
         private static readonly string UTF8ByteOrderMark = Encoding.UTF8.GetString(Encoding.UTF8.GetPreamble());
         private static readonly FilteredExpandoObjectConverter _filteredExpandoObjectConverter = new FilteredExpandoObjectConverter();
@@ -40,6 +43,22 @@ namespace Microsoft.Azure.WebJobs.Script
         private static List<string> dotNetLanguages = new List<string>() { DotNetScriptTypes.CSharp, DotNetScriptTypes.DotNetAssembly };
 
         public static int ColdStartDelayMS { get; set; } = 5000;
+
+        internal static bool TryGetHostService<TService>(IScriptHostManager scriptHostManager, out TService service) where TService : class
+        {
+            service = null;
+
+            try
+            {
+                service = (scriptHostManager as IServiceProvider)?.GetService<TService>();
+            }
+            catch
+            {
+                // can get exceptions if the host is being disposed
+            }
+
+            return service != null;
+        }
 
         /// <summary>
         /// Walk from the method up to the containing type, looking for an instance
@@ -467,7 +486,8 @@ namespace Microsoft.Azure.WebJobs.Script
             functionName = null;
 
             object scopeValue = null;
-            if ((scopeProps.TryGetValue("functionName", out scopeValue) ||
+            if (scopeProps != null && scopeProps.Count > 0 &&
+                (scopeProps.TryGetValue("functionName", out scopeValue) ||
                  scopeProps.TryGetValue(LogConstants.NameKey, out scopeValue) ||
                  scopeProps.TryGetValue(ScopeKeys.FunctionName, out scopeValue)) && scopeValue != null)
             {
@@ -755,8 +775,78 @@ namespace Microsoft.Azure.WebJobs.Script
 
         public static bool IsMediaTypeOctetOrMultipart(MediaTypeHeaderValue mediaType)
         {
-                return mediaType != null && (string.Equals(mediaType.MediaType, ScriptConstants.MediatypeOctetStream, StringComparison.OrdinalIgnoreCase) ||
-                                mediaType.MediaType.IndexOf(ScriptConstants.MediatypeMutipartPrefix, StringComparison.OrdinalIgnoreCase) >= 0);
+            return mediaType != null && (string.Equals(mediaType.MediaType, ScriptConstants.MediatypeOctetStream, StringComparison.OrdinalIgnoreCase) ||
+                            mediaType.MediaType.IndexOf(ScriptConstants.MediatypeMutipartPrefix, StringComparison.OrdinalIgnoreCase) >= 0);
+        }
+
+        public static void ValidateRetryOptions(RetryOptions
+            retryOptions)
+        {
+            if (retryOptions == null)
+            {
+                return;
+            }
+            if (!retryOptions.MaxRetryCount.HasValue)
+            {
+                throw new ArgumentNullException(nameof(retryOptions.MaxRetryCount));
+            }
+            switch (retryOptions.Strategy)
+            {
+                case RetryStrategy.FixedDelay:
+                    if (!retryOptions.DelayInterval.HasValue)
+                    {
+                        throw new ArgumentNullException(nameof(retryOptions.DelayInterval));
+                    }
+                    // ensure values specified to create FixedDelayRetryAttribute are valid
+                    _ = new FixedDelayRetryAttribute(retryOptions.MaxRetryCount.Value, retryOptions.DelayInterval.ToString());
+                    break;
+                case RetryStrategy.ExponentialBackoff:
+                    if (!retryOptions.MinimumInterval.HasValue)
+                    {
+                        throw new ArgumentNullException(nameof(retryOptions.DelayInterval));
+                    }
+                    if (!retryOptions.MaximumInterval.HasValue)
+                    {
+                        throw new ArgumentNullException(nameof(retryOptions.DelayInterval));
+                    }
+                    // ensure values specified to create ExponentialBackoffRetryAttribute are valid
+                    _ = new ExponentialBackoffRetryAttribute(retryOptions.MaxRetryCount.Value, retryOptions.MinimumInterval.ToString(), retryOptions.MaximumInterval.ToString());
+                    break;
+            }
+        }
+
+        public static void LogAutorestGeneratedJsonIfExists(string rootScriptPath, ILogger logger)
+        {
+            string autorestGeneratedJsonPath = Path.Combine(rootScriptPath, ScriptConstants.AutorestGeenratedMetadataFileName);
+            JObject autorestGeneratedJson;
+
+            if (FileUtility.FileExists(autorestGeneratedJsonPath))
+            {
+                string autorestGeneratedJsonPathContents = FileUtility.ReadAllText(autorestGeneratedJsonPath);
+                try
+                {
+                    autorestGeneratedJson = JObject.Parse(autorestGeneratedJsonPathContents);
+                    logger.AutorestGeneratedFunctionApplication(autorestGeneratedJson.ToString());
+                }
+                catch (JsonException ex)
+                {
+                    logger.IncorrectAutorestGeneratedJsonFile($"Unable to parse autorest configuration file '{autorestGeneratedJsonPath}'" +
+                        $" with content '{autorestGeneratedJsonPathContents}' | exception: {ex.StackTrace}");
+                }
+                catch (Exception ex)
+                {
+                    logger.IncorrectAutorestGeneratedJsonFile($"Caught exception while parsing .autorest_generated.json | " +
+                        $"exception: {ex.StackTrace}");
+                }
+            }
+            // If we dont find the .autorest_generated.json in the function app, we just don't log anything.
+        }
+
+        public static void AccumulateDuplicateHeader(HttpContext httpContext, string headerName)
+        {
+            // Add duplicate http header to HttpContext.Items. This will be logged later in middleware.
+            var previousHeaders = httpContext.Items[ScriptConstants.AzureFunctionsDuplicateHttpHeadersKey] as string ?? string.Empty;
+            httpContext.Items[ScriptConstants.AzureFunctionsDuplicateHttpHeadersKey] = $"{previousHeaders} '{headerName}'";
         }
 
         private class FilteredExpandoObjectConverter : ExpandoObjectConverter

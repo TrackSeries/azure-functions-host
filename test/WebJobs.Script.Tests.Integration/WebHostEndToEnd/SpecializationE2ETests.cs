@@ -17,6 +17,7 @@ using Microsoft.Azure.WebJobs.Logging;
 using Microsoft.Azure.WebJobs.Logging.ApplicationInsights;
 using Microsoft.Azure.WebJobs.Script.Configuration;
 using Microsoft.Azure.WebJobs.Script.Description;
+using Microsoft.Azure.WebJobs.Script.Grpc;
 using Microsoft.Azure.WebJobs.Script.WebHost;
 using Microsoft.Azure.WebJobs.Script.WebHost.Middleware;
 using Microsoft.Azure.WebJobs.Script.Workers.Rpc;
@@ -28,6 +29,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.WebJobs.Script.Tests;
 using Xunit;
+using Xunit.Abstractions;
 using IApplicationLifetime = Microsoft.AspNetCore.Hosting.IApplicationLifetime;
 
 namespace Microsoft.Azure.WebJobs.Script.Tests
@@ -44,7 +46,9 @@ namespace Microsoft.Azure.WebJobs.Script.Tests
         private readonly TestEnvironment _environment;
         private readonly TestLoggerProvider _loggerProvider;
 
-        public SpecializationE2ETests()
+        private readonly ITestOutputHelper _testOutputHelper;
+
+        public SpecializationE2ETests(ITestOutputHelper testOutputHelper)
         {
             StandbyManager.ResetChangeToken();
 
@@ -60,6 +64,8 @@ namespace Microsoft.Azure.WebJobs.Script.Tests
             _pauseBeforeHostBuild = new SemaphoreSlim(1, 1);
             _pauseAfterStandbyHostBuild = new SemaphoreSlim(1, 1);
             _buildCount = new SemaphoreSlim(2, 2);
+
+            _testOutputHelper = testOutputHelper;
         }
 
         [Fact]
@@ -190,7 +196,20 @@ namespace Microsoft.Azure.WebJobs.Script.Tests
                 void ValidateStatusCode(HttpStatusCode statusCode) => Assert.Equal(HttpStatusCode.OK, statusCode);
                 var validateStatusCodes = Enumerable.Repeat<Action<HttpStatusCode>>(ValidateStatusCode, 100).ToArray();
                 var actualStatusCodes = requestTasks.Select(t => t.Result.StatusCode);
-                Assert.Collection(actualStatusCodes, validateStatusCodes);
+
+                try
+                {
+                    Assert.Collection(actualStatusCodes, validateStatusCodes);
+                }
+                catch
+                {
+                    foreach (var message in _loggerProvider.GetAllLogMessages())
+                    {
+                        _testOutputHelper.WriteLine(message.FormattedMessage);
+                    }
+
+                    throw;
+                }
             }
         }
 
@@ -237,7 +256,7 @@ namespace Microsoft.Azure.WebJobs.Script.Tests
             var channelFactory = host.Services.GetService<IRpcWorkerChannelFactory>();
             var workerOptionsPlaceholderMode = host.Services.GetService<IOptions<LanguageWorkerOptions>>();
             Assert.Equal(4, workerOptionsPlaceholderMode.Value.WorkerConfigs.Count);
-            var rpcChannelInPlaceholderMode = (RpcWorkerChannel)channelFactory.Create("/", "powershell", null, 0, workerOptionsPlaceholderMode.Value.WorkerConfigs);
+            var rpcChannelInPlaceholderMode = (GrpcWorkerChannel)channelFactory.Create("/", "powershell", null, 0, workerOptionsPlaceholderMode.Value.WorkerConfigs);
             Assert.Equal("6", rpcChannelInPlaceholderMode.Config.Description.DefaultRuntimeVersion);
 
 
@@ -265,14 +284,16 @@ namespace Microsoft.Azure.WebJobs.Script.Tests
 
             var workerOptionsAtJobhostLevel = scriptHostService.Services.GetService<IOptions<LanguageWorkerOptions>>();
             Assert.Equal(1, workerOptionsAtJobhostLevel.Value.WorkerConfigs.Count);
-            var rpcChannelAfterSpecialization = (RpcWorkerChannel)channelFactory.Create("/", "powershell", null, 0, workerOptionsAtJobhostLevel.Value.WorkerConfigs);
+            var rpcChannelAfterSpecialization = (GrpcWorkerChannel)channelFactory.Create("/", "powershell", null, 0, workerOptionsAtJobhostLevel.Value.WorkerConfigs);
             Assert.Equal("7", rpcChannelAfterSpecialization.Config.Description.DefaultRuntimeVersion);
         }
 
-        [Fact]
-        public void ColdStart_JitFailuresTest()
+        [Theory]
+        [InlineData(WarmUpConstants.JitTraceFileName)]
+        [InlineData(WarmUpConstants.LinuxJitTraceFileName)]
+        public void ColdStart_JitFailuresTest(string fileName)
         {
-            var path = Path.Combine(Path.GetDirectoryName(new Uri(typeof(HostWarmupMiddleware).Assembly.CodeBase).LocalPath), WarmUpConstants.PreJitFolderName, WarmUpConstants.JitTraceFileName);
+            var path = Path.Combine(Path.GetDirectoryName(new Uri(typeof(HostWarmupMiddleware).Assembly.CodeBase).LocalPath), WarmUpConstants.PreJitFolderName, fileName);
 
             var file = new FileInfo(path);
 
@@ -283,7 +304,7 @@ namespace Microsoft.Azure.WebJobs.Script.Tests
             var failurePercentage = (double) failedPrepares / successfulPrepares * 100;
             
             // using 1% as approximate number of allowed failures before we need to regenrate a new PGO file.
-            Assert.True( failurePercentage < 1.0 , $"Number of failed PGOs are more than 1 percent! Current number of failures are {failedPrepares}. This will definitely impact cold start! Time to regenrate PGOs and update the {WarmUpConstants.JitTraceFileName} file!");
+            Assert.True( failurePercentage < 1.0 , $"Number of failed PGOs are more than 1 percent! Current number of failures are {failedPrepares}. This will definitely impact cold start! Time to regenrate PGOs and update the {fileName} file!");
         }
 
         private IWebHostBuilder CreateStandbyHostBuilder(params string[] functions)

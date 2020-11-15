@@ -28,8 +28,6 @@ namespace Microsoft.Azure.WebJobs.Script.Workers.Rpc
         private readonly IRpcWorkerChannelFactory _rpcWorkerChannelFactory;
         private readonly IEnvironment _environment;
         private readonly IApplicationLifetime _applicationLifetime;
-        private readonly int _debounceSeconds = 10;
-        private readonly int _maxAllowedProcessCount = 10;
         private readonly TimeSpan _shutdownTimeout = TimeSpan.FromSeconds(10);
         private readonly TimeSpan thresholdBetweenRestarts = TimeSpan.FromMinutes(WorkerConstants.WorkerRestartErrorIntervalThresholdInMinutes);
 
@@ -50,6 +48,7 @@ namespace Microsoft.Azure.WebJobs.Script.Workers.Rpc
         private IEnumerable<FunctionMetadata> _functions;
         private ConcurrentStack<WorkerErrorEvent> _languageWorkerErrors = new ConcurrentStack<WorkerErrorEvent>();
         private CancellationTokenSource _processStartCancellationToken = new CancellationTokenSource();
+        private int _debounceMilliSeconds = (int)TimeSpan.FromSeconds(10).TotalMilliseconds;
 
         public RpcFunctionInvocationDispatcher(IOptions<ScriptJobHostOptions> scriptHostOptions,
             IMetricsLogger metricsLogger,
@@ -76,14 +75,8 @@ namespace Microsoft.Azure.WebJobs.Script.Workers.Rpc
             _logger = loggerFactory.CreateLogger<RpcFunctionInvocationDispatcher>();
             _rpcWorkerChannelFactory = rpcWorkerChannelFactory;
             _workerRuntime = _environment.GetEnvironmentVariable(RpcWorkerConstants.FunctionWorkerRuntimeSettingName);
-
-            var processCount = _environment.GetEnvironmentVariable(RpcWorkerConstants.FunctionsWorkerProcessCountSettingName);
-            _maxProcessCount = (processCount != null && int.Parse(processCount) > 1) ? int.Parse(processCount) : 1;
-            _maxProcessCount = _maxProcessCount > _maxAllowedProcessCount ? _maxAllowedProcessCount : _maxProcessCount;
             _functionDispatcherLoadBalancer = functionDispatcherLoadBalancer;
-
             State = FunctionInvocationDispatcherState.Default;
-            ErrorEventsThreshold = 3 * _maxProcessCount;
 
             _workerErrorSubscription = _eventManager.OfType<WorkerErrorEvent>()
                .Subscribe(WorkerError);
@@ -119,7 +112,7 @@ namespace Microsoft.Azure.WebJobs.Script.Workers.Rpc
             rpcWorkerChannel.StartWorkerProcessAsync().ContinueWith(workerInitTask =>
             {
                 _logger.LogDebug("Adding jobhost language worker channel for runtime: {language}. workerId:{id}", _workerRuntime, rpcWorkerChannel.Id);
-                rpcWorkerChannel.SendFunctionLoadRequests(_managedDependencyOptions.Value);
+                rpcWorkerChannel.SendFunctionLoadRequests(_managedDependencyOptions.Value, _scriptOptions.FunctionTimeout);
                 SetFunctionDispatcherStateToInitializedAndLog();
             }, TaskContinuationOptions.OnlyOnRanToCompletion);
             return Task.CompletedTask;
@@ -137,7 +130,7 @@ namespace Microsoft.Azure.WebJobs.Script.Workers.Rpc
             _logger.LogDebug("Creating new webhost language worker channel for runtime:{workerRuntime}.", _workerRuntime);
             IRpcWorkerChannel workerChannel = await _webHostLanguageWorkerChannelManager.InitializeChannelAsync(_workerRuntime);
             workerChannel.SetupFunctionInvocationBuffers(_functions);
-            workerChannel.SendFunctionLoadRequests(_managedDependencyOptions.Value);
+            workerChannel.SendFunctionLoadRequests(_managedDependencyOptions.Value, _scriptOptions.FunctionTimeout);
         }
 
         internal async void ShutdownWebhostLanguageWorkerChannels()
@@ -150,7 +143,7 @@ namespace Microsoft.Azure.WebJobs.Script.Workers.Rpc
         {
             for (var count = startIndex; count < _maxProcessCount; count++)
             {
-                startAction = startAction.Debounce(_processStartCancellationToken.Token, count * _debounceSeconds * 1000);
+                startAction = startAction.Debounce(_processStartCancellationToken.Token, count * _debounceMilliSeconds);
                 startAction();
             }
         }
@@ -175,6 +168,15 @@ namespace Microsoft.Azure.WebJobs.Script.Workers.Rpc
                 return;
             }
 
+            var workerConfig = _workerConfigs.Where(c => c.Description.Language.Equals(_workerRuntime, StringComparison.OrdinalIgnoreCase)).FirstOrDefault();
+            if (workerConfig == null)
+            {
+                throw new InvalidOperationException($"WorkerCofig for runtime: {_workerRuntime} not found");
+            }
+            _maxProcessCount = workerConfig.CountOptions.ProcessCount;
+            _debounceMilliSeconds = (int)workerConfig.CountOptions.ProcessStartupInterval.TotalMilliseconds;
+            ErrorEventsThreshold = 3 * _maxProcessCount;
+
             if (functions == null || functions.Count() == 0)
             {
                 // do not initialize function dispatcher if there are no functions
@@ -196,7 +198,7 @@ namespace Microsoft.Azure.WebJobs.Script.Workers.Rpc
                             {
                                 IRpcWorkerChannel initializedLanguageWorkerChannel = await initializedLanguageWorkerChannelTask.Task;
                                 initializedLanguageWorkerChannel.SetupFunctionInvocationBuffers(_functions);
-                                initializedLanguageWorkerChannel.SendFunctionLoadRequests(_managedDependencyOptions.Value);
+                                initializedLanguageWorkerChannel.SendFunctionLoadRequests(_managedDependencyOptions.Value, _scriptOptions.FunctionTimeout);
                             }
                             catch (Exception ex)
                             {
@@ -428,7 +430,6 @@ namespace Microsoft.Azure.WebJobs.Script.Workers.Rpc
         public async Task<bool> RestartWorkerWithInvocationIdAsync(string invocationId)
         {
             // Dispose and restart errored channel with the particular invocation id
-            State = FunctionInvocationDispatcherState.WorkerProcessRestarting;
             var channels = await GetInitializedWorkerChannelsAsync();
             foreach (var channel in channels)
             {
@@ -440,17 +441,6 @@ namespace Microsoft.Azure.WebJobs.Script.Workers.Rpc
                 }
             }
             return false;
-        }
-
-        public async Task RestartAllWorkersAsync()
-        {
-            State = FunctionInvocationDispatcherState.WorkerProcessRestarting;
-            var channels = await GetAllWorkerChannelsAsync();
-            foreach (var channel in channels)
-            {
-                _logger.LogInformation($"Restarting channel '{channel.Id}' that is as part of restarting all channels.");
-                await DisposeAndRestartWorkerChannel(_workerRuntime, channel.Id);
-            }
         }
     }
 }

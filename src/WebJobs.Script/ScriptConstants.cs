@@ -73,6 +73,7 @@ namespace Microsoft.Azure.WebJobs.Script
         public const string DiagnosticSentinelFileName = "diagnostic_sentinel";
         public const string HostMetadataFileName = "host.json";
         public const string FunctionMetadataFileName = "function.json";
+        public const string AutorestGeenratedMetadataFileName = ".autorest_generated.json";
         public const string ProxyMetadataFileName = "proxies.json";
         public const string ExtensionsMetadataFileName = "extensions.json";
         public const string AppOfflineFileName = "app_offline.htm";
@@ -109,6 +110,7 @@ namespace Microsoft.Azure.WebJobs.Script
         public const string FeatureFlagEnableActionResultHandling = "EnableActionResultHandling";
         public const string FeatureFlagAllowSynchronousIO = "AllowSynchronousIO";
         public const string FeatureFlagRelaxedAssemblyUnification = "RelaxedAssemblyUnification";
+        public const string FeatureFlagEnableEnhancedScopes = "EnableEnhancedScopes";
 
         public const string AdminJwtValidAudienceFormat = "https://{0}.azurewebsites.net/azurefunctions";
         public const string AdminJwtValidIssuerFormat = "https://{0}.scm.azurewebsites.net";
@@ -170,6 +172,8 @@ namespace Microsoft.Azure.WebJobs.Script
         public const string Linux64BitRID = "linux-x64";
         public const string Windows64BitRID = "win-x64";
         public const string Windows32BitRID = "win-x86";
+
+        public const string AzureMonitorTraceCategory = "FunctionAppLogs";
 
         public static readonly ImmutableArray<string> HttpMethods = ImmutableArray.Create("get", "post", "delete", "head", "patch", "put", "options");
         public static readonly ImmutableArray<string> AssemblyFileTypes = ImmutableArray.Create(".dll", ".exe");

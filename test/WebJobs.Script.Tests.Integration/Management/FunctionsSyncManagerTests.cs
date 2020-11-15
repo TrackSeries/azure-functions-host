@@ -538,7 +538,7 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Managment
 
                 var azureStorageConfig = new JObject();
                 azureStorageConfig["connectionStringName"] = "DurableConnection";
-                durableConfig["storageOptions"] = azureStorageConfig;
+                durableConfig["storageProvider"] = azureStorageConfig;
 
                 var hostConfig = GetHostConfig(durableConfig, useBundles: false);
 
@@ -715,8 +715,8 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Managment
                         return new[]
                         {
                             Path.Combine(rootPath, "bin"),
-                            Path.Combine(rootPath, "function1"),
                             Path.Combine(rootPath, "function2"),
+                            Path.Combine(rootPath, "function1"),
                             Path.Combine(rootPath, "function3")
                         };
                     }

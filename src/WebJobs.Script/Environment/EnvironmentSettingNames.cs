@@ -57,6 +57,10 @@ namespace Microsoft.Azure.WebJobs.Script
         public const string RoleInstanceId = "RoleInstanceId";
         public const string HealthPingEnabled = "WEBSITE_FUNCTIONS_HEALTH_PING_ENABLED";
         public const string TestDataCapEnabled = "WEBSITE_FUNCTIONS_TESTDATA_CAP_ENABLED";
+        public const string AzureMonitorCategories = "WEBSITE_FUNCTIONS_AZUREMONITOR_CATEGORIES";
+
+        //Function in Kubernetes
+        public const string PodNamespace = "POD_NAMESPACE";
 
         /// <summary>
         /// Environment variable dynamically set by the platform when it is safe to
@@ -101,5 +105,12 @@ namespace Microsoft.Azure.WebJobs.Script
        // EasyAuth settings
         public const string EasyAuthClientId = "WEBSITE_AUTH_CLIENT_ID";
         public const string EasyAuthSigningKey = "WEBSITE_AUTH_SIGNING_KEY";
+
+        // Antares version settings
+        public const string AntaresPlatformVersionWindows = "WEBSITE_PLATFORM_VERSION";
+        public const string AntaresPlatformVersionLinux = "PLATFORM_VERSION";
+
+        // Machine identifier
+        public const string AntaresComputerName = "COMPUTERNAME";
     }
 }

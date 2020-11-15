@@ -25,7 +25,7 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost
             IEnvironment environment = builder.ApplicationServices.GetService<IEnvironment>() ?? SystemEnvironment.Instance;
             IOptionsMonitor<StandbyOptions> standbyOptions = builder.ApplicationServices.GetService<IOptionsMonitor<StandbyOptions>>();
             IOptionsMonitor<HttpBodyControlOptions> httpBodyControlOptions = builder.ApplicationServices.GetService<IOptionsMonitor<HttpBodyControlOptions>>();
-            IOptionsMonitor<HttpOptions> httpOptions = builder.ApplicationServices.GetService<IOptionsMonitor<HttpOptions>>();
+            IServiceProvider serviceProvider = builder.ApplicationServices;
 
             builder.UseMiddleware<SystemTraceMiddleware>();
             builder.UseMiddleware<HostnameFixupMiddleware>();
@@ -54,7 +54,7 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost
 
             builder.UseWhen(context => HostWarmupMiddleware.IsWarmUpRequest(context.Request, standbyOptions.CurrentValue.InStandbyMode, environment), config =>
             {
-                builder.UseMiddleware<HostWarmupMiddleware>();
+                config.UseMiddleware<HostWarmupMiddleware>();
             });
 
             // This middleware must be registered before any other middleware depending on
@@ -71,11 +71,11 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost
             {
                 config.UseMiddleware<HomepageMiddleware>();
             });
-            builder.UseWhen(context => HttpThrottleMiddleware.ShouldEnable(httpOptions.CurrentValue) && !context.Request.IsAdminRequest(), config =>
+            builder.UseWhen(context => !context.Request.IsAdminRequest() && HttpThrottleMiddleware.ShouldEnable(serviceProvider), config =>
             {
                 config.UseMiddleware<HttpThrottleMiddleware>();
             });
-            builder.UseMiddleware<ResponseContextItemsCheckMiddleware>();
+
             builder.UseMiddleware<JobHostPipelineMiddleware>();
             builder.UseMiddleware<FunctionInvocationMiddleware>();
 

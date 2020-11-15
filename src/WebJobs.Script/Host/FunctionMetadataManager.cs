@@ -29,12 +29,11 @@ namespace Microsoft.Azure.WebJobs.Script
         private IOptions<ScriptJobHostOptions> _scriptOptions;
         private IOptions<LanguageWorkerOptions> _languageWorkerOptions;
         private ImmutableArray<FunctionMetadata> _functionMetadataArray;
-        private IEnumerable<IFunctionProvider> _functionProviders;
         private Dictionary<string, ICollection<string>> _functionErrors = new Dictionary<string, ICollection<string>>();
         private ConcurrentDictionary<string, FunctionMetadata> _functionMetadataMap = new ConcurrentDictionary<string, FunctionMetadata>(StringComparer.OrdinalIgnoreCase);
 
         public FunctionMetadataManager(IOptions<ScriptJobHostOptions> scriptOptions, IFunctionMetadataProvider functionMetadataProvider,
-            IEnumerable<IFunctionProvider> functionProviders, IOptions<HttpWorkerOptions> httpWorkerOptions, IScriptHostManager scriptHostManager, ILoggerFactory loggerFactory, IOptions<LanguageWorkerOptions> languageWorkerOptions)
+            IOptions<HttpWorkerOptions> httpWorkerOptions, IScriptHostManager scriptHostManager, ILoggerFactory loggerFactory, IOptions<LanguageWorkerOptions> languageWorkerOptions)
         {
             _scriptOptions = scriptOptions;
             _languageWorkerOptions = languageWorkerOptions;
@@ -43,7 +42,6 @@ namespace Microsoft.Azure.WebJobs.Script
 
             _logger = loggerFactory.CreateLogger(LogCategories.Startup);
             _isHttpWorker = httpWorkerOptions?.Value?.Description != null;
-            _functionProviders = functionProviders;
 
             // Every time script host is re-intializing, we also need to re-initialize
             // services that change with the scope of the script host.
@@ -76,12 +74,13 @@ namespace Microsoft.Azure.WebJobs.Script
         /// </summary>
         /// <param name="forceRefresh">Forces reload from all providers.</param>
         /// <param name="applyAllowList">Apply functions allow list filter.</param>
+        /// <param name="includeCustomProviders">Include any metadata provided by IFunctionProvider when loading the metadata</param>
         /// <returns> An Immmutable array of FunctionMetadata.</returns>
-        public ImmutableArray<FunctionMetadata> GetFunctionMetadata(bool forceRefresh, bool applyAllowList = true)
+        public ImmutableArray<FunctionMetadata> GetFunctionMetadata(bool forceRefresh, bool applyAllowList = true, bool includeCustomProviders = true)
         {
             if (forceRefresh || _servicesReset || _functionMetadataArray.IsDefaultOrEmpty)
             {
-                _functionMetadataArray = LoadFunctionMetadata(forceRefresh);
+                _functionMetadataArray = LoadFunctionMetadata(forceRefresh, includeCustomProviders);
                 _logger.FunctionMetadataManagerFunctionsLoaded(ApplyAllowList(_functionMetadataArray).Count());
                 _servicesReset = false;
             }
@@ -105,7 +104,6 @@ namespace Microsoft.Azure.WebJobs.Script
         {
             _functionMetadataMap.Clear();
 
-            _functionProviders = _serviceProvider.GetService<IEnumerable<IFunctionProvider>>();
             _isHttpWorker = _serviceProvider.GetService<IOptions<HttpWorkerOptions>>()?.Value?.Description != null;
             _scriptOptions = _serviceProvider.GetService<IOptions<ScriptJobHostOptions>>();
             _languageWorkerOptions = _serviceProvider.GetService<IOptions<LanguageWorkerOptions>>();
@@ -119,7 +117,7 @@ namespace Microsoft.Azure.WebJobs.Script
         /// <summary>
         /// Read all functions and populate function metadata.
         /// </summary>
-        internal ImmutableArray<FunctionMetadata> LoadFunctionMetadata(bool forceRefresh = false)
+        internal ImmutableArray<FunctionMetadata> LoadFunctionMetadata(bool forceRefresh = false, bool includeCustomProviders = true)
         {
             _functionMetadataMap.Clear();
 
@@ -141,7 +139,10 @@ namespace Microsoft.Azure.WebJobs.Script
             }
 
             // Add metadata and errors from any additional function providers
-            LoadCustomProviderFunctions(functionMetadataList);
+            if (includeCustomProviders)
+            {
+                LoadCustomProviderFunctions(functionMetadataList);
+            }
 
             // Validate
             foreach (FunctionMetadata functionMetadata in functionMetadataList.ToList())
@@ -160,7 +161,7 @@ namespace Microsoft.Azure.WebJobs.Script
                 Errors = _functionErrors.Where(kvp => functionsAllowList.Any(functionName => functionName.Equals(kvp.Key, StringComparison.CurrentCultureIgnoreCase))).ToImmutableDictionary(kvp => kvp.Key, kvp => kvp.Value.ToImmutableArray());
             }
 
-            return functionMetadataList.ToImmutableArray();
+            return functionMetadataList.OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase).ToImmutableArray();
         }
 
         internal bool IsScriptFileDetermined(FunctionMetadata functionMetadata)
@@ -184,16 +185,19 @@ namespace Microsoft.Azure.WebJobs.Script
 
         private void LoadCustomProviderFunctions(List<FunctionMetadata> functionMetadataList)
         {
-            if (_functionProviders != null && _functionProviders.Any())
+            // We always want to get the most updated function providers in case this list was changed.
+            IEnumerable<IFunctionProvider> functionProviders = _serviceProvider?.GetService<IEnumerable<IFunctionProvider>>();
+
+            if (functionProviders != null && functionProviders.Any())
             {
-                AddMetadataFromCustomProviders(functionMetadataList);
+                AddMetadataFromCustomProviders(functionProviders, functionMetadataList);
             }
         }
 
-        private void AddMetadataFromCustomProviders(List<FunctionMetadata> functionMetadataList)
+        private void AddMetadataFromCustomProviders(IEnumerable<IFunctionProvider> functionProviders, List<FunctionMetadata> functionMetadataList)
         {
             var functionProviderTasks = new List<Task<ImmutableArray<FunctionMetadata>>>();
-            foreach (var functionProvider in _functionProviders)
+            foreach (var functionProvider in functionProviders)
             {
                 functionProviderTasks.Add(functionProvider.GetFunctionMetadataAsync());
             }
@@ -214,8 +218,11 @@ namespace Microsoft.Azure.WebJobs.Script
                             throw new InvalidOperationException($"Found duplicate {nameof(FunctionMetadata)} with the name {metadata.Name}");
                         }
 
-                        // All custom provided functions are considered codeless functions
-                        metadata.SetIsCodeless(true);
+                        // If not explicitly set, consider the function codeless.
+                        if (!metadata.IsCodelessSet())
+                        {
+                            metadata.SetIsCodeless(true);
+                        }
 
                         distinctFunctionNames.Add(metadata.Name);
                         functionMetadataList.Add(metadata);
@@ -223,7 +230,7 @@ namespace Microsoft.Azure.WebJobs.Script
                 }
             }
 
-            foreach (var functionProvider in _functionProviders)
+            foreach (var functionProvider in functionProviders)
             {
                 if (functionProvider.FunctionErrors == null)
                 {

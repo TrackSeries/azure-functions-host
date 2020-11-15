@@ -45,7 +45,7 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost.DependencyInjection
                 .Expect<JobHostService>("Microsoft.Azure.WebJobs.Hosting.OptionsLoggingService")
                 .ExpectFactory<ExternalConfigurationStartupValidatorService>()
                 .Expect<PrimaryHostCoordinator>()
-                .Expect<FileMonitoringService>()
+                .ExpectFactory<IFileMonitoringService>()
                 .Expect<WorkerConsoleLogService>()
                 .Expect<FunctionInvocationDispatcherShutdownManager>()
                 .Optional<ChangeAnalysisService>()
@@ -53,10 +53,10 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost.DependencyInjection
                 .Optional<FuncAppFileProvisioningService>() // Used by powershell.
                 .Optional<JobHostService>() // Missing when host is offline.
                 .Optional<FunctionsSyncService>() // Conditionally registered.
-                .OptionalExternal("Microsoft.AspNetCore.DataProtection.Internal.DataProtectionHostedService", "Microsoft.AspNetCore.DataProtection", "adb9793829ddae60"); // Popularly-registered by DataProtection.
+                .OptionalExternal("Microsoft.AspNetCore.DataProtection.Internal.DataProtectionHostedService", "Microsoft.AspNetCore.DataProtection", "adb9793829ddae60") // Popularly-registered by DataProtection.
+                .OptionalExternal("Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckPublisherHostedService", "Microsoft.Extensions.Diagnostics.HealthChecks", "adb9793829ddae60"); // Popularly-registered by Health Check Monitor.
 
             expected.ExpectSubcollection<ILoggerProvider>()
-                .Expect<AzureMonitorDiagnosticLoggerProvider>()
                 .Expect<FunctionFileLoggerProvider>()
                 .Expect<HostFileLoggerProvider>()
                 .Expect<SystemLoggerProvider>();
@@ -92,12 +92,12 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost.DependencyInjection
 
             if (descriptor.ImplementationInstance != null)
             {
-                format += $", {nameof(descriptor.ImplementationInstance)}: {descriptor.ImplementationInstance.GetType()}";
+                format += $", {nameof(descriptor.ImplementationInstance)}: {descriptor.ImplementationInstance.GetType().AssemblyQualifiedName}";
             }
 
             if (descriptor.ImplementationType != null)
             {
-                format += $", {nameof(descriptor.ImplementationType)}: {descriptor.ImplementationType}";
+                format += $", {nameof(descriptor.ImplementationType)}: {descriptor.ImplementationType.AssemblyQualifiedName}";
             }
 
             return format;
