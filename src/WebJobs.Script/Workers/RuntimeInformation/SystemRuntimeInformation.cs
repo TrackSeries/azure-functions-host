@@ -14,7 +14,7 @@ namespace Microsoft.Azure.WebJobs.Script.Workers
 
         public OSPlatform GetOSPlatform()
         {
-            OSPlatform os;
+            OSPlatform os = default;
             if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
                 os = OSPlatform.Windows;
