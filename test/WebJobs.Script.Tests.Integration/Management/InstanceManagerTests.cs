@@ -30,6 +30,7 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Managment
         private readonly TestEnvironmentEx _environment;
         private readonly ScriptWebHostEnvironment _scriptWebEnvironment;
         private readonly InstanceManager _instanceManager;
+        private readonly Mock<IMeshServiceClient> _meshServiceClientMock;
         private readonly HttpClient _httpClient;
         private readonly LoggerFactory _loggerFactory = new LoggerFactory();
         private readonly TestOptionsFactory<ScriptApplicationHostOptions> _optionsFactory = new TestOptionsFactory<ScriptApplicationHostOptions>(new ScriptApplicationHostOptions() { ScriptPath = Path.GetTempPath() });
@@ -43,8 +44,10 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Managment
 
             _environment = new TestEnvironmentEx();
             _scriptWebEnvironment = new ScriptWebHostEnvironment(_environment);
+            _meshServiceClientMock = new Mock<IMeshServiceClient>(MockBehavior.Strict);
 
-            _instanceManager = new InstanceManager(_optionsFactory, _httpClient, _scriptWebEnvironment, _environment, _loggerFactory.CreateLogger<InstanceManager>(), new TestMetricsLogger(), null);
+            _instanceManager = new InstanceManager(_optionsFactory, _httpClient, _scriptWebEnvironment, _environment,
+                _loggerFactory.CreateLogger<InstanceManager>(), new TestMetricsLogger(), _meshServiceClientMock.Object);
 
             InstanceManager.Reset();
         }
@@ -126,6 +129,10 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Managment
                 },
                 IsWarmupRequest = false
             };
+
+            _meshServiceClientMock.Setup(c => c.NotifyHealthEvent(ContainerHealthEventType.Fatal,
+                It.Is<Type>(t => t == typeof(InstanceManager)), "Assign failed")).Returns(Task.CompletedTask);
+
             bool result = _instanceManager.StartAssignment(context);
             Assert.True(result);
             Assert.True(_scriptWebEnvironment.InStandbyMode);
@@ -135,6 +142,9 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Managment
             var error = _loggerProvider.GetAllLogMessages().First(p => p.Level == LogLevel.Error);
             Assert.Equal("Assign failed", error.FormattedMessage);
             Assert.Equal("Kaboom!", error.Exception.Message);
+
+            _meshServiceClientMock.Verify(c => c.NotifyHealthEvent(ContainerHealthEventType.Fatal,
+                It.Is<Type>(t => t == typeof(InstanceManager)), "Assign failed"), Times.Once);
         }
 
         [Fact]
@@ -284,25 +294,51 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Managment
             Assert.False(result);
         }
 
-        [Fact(Skip = "https://github.com/Azure/azure-functions-host/issues/6643")]
+        [Fact]
         public async Task ValidateContext_InvalidZipUrl_WebsiteUseZip_ReturnsError()
         {
-            var environment = new Dictionary<string, string>()
+            var environmentSettings = new Dictionary<string, string>()
             {
                 { EnvironmentSettingNames.AzureWebsiteZipDeployment, "http://invalid.com/invalid/dne" }
             };
+
+            var environment = new TestEnvironment();
+            foreach (var (key, value) in environmentSettings)
+            {
+                environment.SetEnvironmentVariable(key, value);
+            }
+
+            var scriptWebEnvironment = new ScriptWebHostEnvironment(environment);
+
+            var loggerFactory = new LoggerFactory();
+            var loggerProvider = new TestLoggerProvider();
+            loggerFactory.AddProvider(loggerProvider);
+
+            var handlerMock = new Mock<HttpMessageHandler>(MockBehavior.Strict);
+
+            handlerMock.Protected().Setup<Task<HttpResponseMessage>>("SendAsync",
+                ItExpr.IsAny<HttpRequestMessage>(),
+                ItExpr.IsAny<CancellationToken>()).ReturnsAsync(new HttpResponseMessage
+            {
+                StatusCode = HttpStatusCode.NotFound
+            });
+
+            var instanceManager = new InstanceManager(_optionsFactory, new HttpClient(handlerMock.Object),
+                scriptWebEnvironment, environment, loggerFactory.CreateLogger<InstanceManager>(),
+                new TestMetricsLogger(), null);
+
             var assignmentContext = new HostAssignmentContext
             {
                 SiteId = 1234,
                 SiteName = "TestSite",
-                Environment = environment,
+                Environment = environmentSettings,
                 IsWarmupRequest = false
             };
 
-            string error = await _instanceManager.ValidateContext(assignmentContext);
+            string error = await instanceManager.ValidateContext(assignmentContext);
             Assert.Equal("Invalid zip url specified (StatusCode: NotFound)", error);
 
-            var logs = _loggerProvider.GetAllLogMessages().Select(p => p.FormattedMessage).ToArray();
+            var logs = loggerProvider.GetAllLogMessages().Select(p => p.FormattedMessage).ToArray();
             Assert.Collection(logs,
                 p => Assert.StartsWith("Validating host assignment context (SiteId: 1234, SiteName: 'TestSite'. IsWarmup: 'False')", p),
                 p => Assert.StartsWith($"Will be using {EnvironmentSettingNames.AzureWebsiteZipDeployment} app setting as zip url. IsWarmup: 'False'", p),
@@ -474,10 +510,11 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Managment
                 SiteId = 1234,
                 SiteName = "TestSite",
                 Environment = environment,
-                IsWarmupRequest = false
+                IsWarmupRequest = false,
+                MSIContext = new MSIContext()
             };
 
-            var instanceManager = GetInstanceManagerForMSISpecialization(assignmentContext, HttpStatusCode.OK);
+            var instanceManager = GetInstanceManagerForMSISpecialization(assignmentContext, HttpStatusCode.OK, null);
 
             string error = await instanceManager.SpecializeMSISidecar(assignmentContext);
             Assert.Null(error);
@@ -505,7 +542,7 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Managment
                 IsWarmupRequest = true
             };
 
-            var instanceManager = GetInstanceManagerForMSISpecialization(assignmentContext, HttpStatusCode.OK);
+            var instanceManager = GetInstanceManagerForMSISpecialization(assignmentContext, HttpStatusCode.OK, null);
 
             string error = await instanceManager.SpecializeMSISidecar(assignmentContext);
             Assert.Null(error);
@@ -527,10 +564,11 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Managment
                 SiteId = 1234,
                 SiteName = "TestSite",
                 Environment = environment,
-                IsWarmupRequest = false
+                IsWarmupRequest = false,
+                MSIContext = new MSIContext()
             };
 
-            var instanceManager = GetInstanceManagerForMSISpecialization(assignmentContext, HttpStatusCode.BadRequest);
+            var instanceManager = GetInstanceManagerForMSISpecialization(assignmentContext, HttpStatusCode.BadRequest, null);
 
             string error = await instanceManager.SpecializeMSISidecar(assignmentContext);
             Assert.NotNull(error);
@@ -541,6 +579,42 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Managment
                 p => Assert.StartsWith("Specializing sidecar at http://localhost:8081", p),
                 p => Assert.StartsWith("Specialize MSI sidecar returned BadRequest", p),
                 p => Assert.StartsWith("Specialize MSI sidecar call failed. StatusCode=BadRequest", p));
+        }
+
+        [Fact]
+        public async Task DoesNotSpecializeMSISidecar_WhenMSIContextNull()
+        {
+            var environment = new Dictionary<string, string>()
+            {
+                { EnvironmentSettingNames.MsiEndpoint, "http://localhost:8081" },
+                { EnvironmentSettingNames.MsiSecret, "secret" }
+            };
+            var assignmentContext = new HostAssignmentContext
+            {
+                SiteId = 1234,
+                SiteName = "TestSite",
+                Environment = environment,
+                IsWarmupRequest = false,
+                MSIContext = null
+            };
+
+
+            var meshServiceClient = new Mock<IMeshServiceClient>(MockBehavior.Strict);
+            meshServiceClient.Setup(c => c.NotifyHealthEvent(ContainerHealthEventType.Fatal,
+                It.Is<Type>(t => t == typeof(InstanceManager)), "Could not specialize MSI sidecar")).Returns(Task.CompletedTask);
+
+            var instanceManager = GetInstanceManagerForMSISpecialization(assignmentContext, HttpStatusCode.BadRequest, meshServiceClient.Object);
+
+            string error = await instanceManager.SpecializeMSISidecar(assignmentContext);
+            Assert.Null(error);
+
+            var logs = _loggerProvider.GetAllLogMessages().Select(p => p.FormattedMessage).ToArray();
+            Assert.Collection(logs,
+                p => Assert.StartsWith("MSI enabled status: True", p),
+                p => Assert.StartsWith("Skipping specialization of MSI sidecar since MSIContext was absent", p));
+
+            meshServiceClient.Verify(c => c.NotifyHealthEvent(ContainerHealthEventType.Fatal,
+                It.Is<Type>(t => t == typeof(InstanceManager)), "Could not specialize MSI sidecar"), Times.Once);
         }
 
         [Fact]
@@ -654,7 +728,8 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Managment
                 client => client.MountCifs(It.IsAny<string>(), It.IsAny<string>(), It.Is<string>(s => s != targetPath1)), Times.Never());
         }
 
-        private InstanceManager GetInstanceManagerForMSISpecialization(HostAssignmentContext hostAssignmentContext, HttpStatusCode httpStatusCode)
+        private InstanceManager GetInstanceManagerForMSISpecialization(HostAssignmentContext hostAssignmentContext,
+            HttpStatusCode httpStatusCode, IMeshServiceClient meshServiceClient)
         {
             var handlerMock = new Mock<HttpMessageHandler>(MockBehavior.Strict);
 
@@ -672,7 +747,7 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Managment
             InstanceManager.Reset();
 
             return new InstanceManager(_optionsFactory, new HttpClient(handlerMock.Object), _scriptWebEnvironment, _environment,
-                _loggerFactory.CreateLogger<InstanceManager>(), new TestMetricsLogger(), null);
+                _loggerFactory.CreateLogger<InstanceManager>(), new TestMetricsLogger(), meshServiceClient);
         }
 
         public void Dispose()

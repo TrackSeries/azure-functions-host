@@ -97,12 +97,12 @@ namespace Microsoft.Azure.WebJobs.Script.Description
                 var assemblyGroup = runtimeAssemblyGroups.FirstOrDefault(g => string.Equals(g.Runtime, rid, StringComparison.OrdinalIgnoreCase));
                 if (assemblyGroup != null)
                 {
-                    return assemblyGroup.AssetPaths.Select(path => new RuntimeAsset(rid, path));
+                    return assemblyGroup.RuntimeFiles.Select(file => new RuntimeAsset(rid, file.Path, file.AssemblyVersion));
                 }
             }
 
             // If unsuccessful, load default assets, making sure the path is flattened to reflect deployed files
-            return runtimeAssemblyGroups.GetDefaultAssets().Select(a => new RuntimeAsset(null, Path.GetFileName(a)));
+            return runtimeAssemblyGroups.GetDefaultRuntimeFileAssets().Select(a => new RuntimeAsset(null, Path.GetFileName(a.Path), a.AssemblyVersion));
         }
 
         private static FunctionAssemblyLoadContext CreateSharedContext()
@@ -201,6 +201,8 @@ namespace Microsoft.Azure.WebJobs.Script.Description
 
         protected override Assembly Load(AssemblyName assemblyName)
         {
+            bool isNameAdjusted = TryAdjustRuntimeAssemblyFromDepsFile(assemblyName, out assemblyName);
+
             // Try to load from deps references, if available
             if (TryLoadDepsDependency(assemblyName, out Assembly assembly))
             {
@@ -210,7 +212,51 @@ namespace Microsoft.Azure.WebJobs.Script.Description
             // If this is a runtime restricted assembly, load it based on unification rules
             if (TryGetRuntimeAssembly(assemblyName, out ScriptRuntimeAssembly scriptRuntimeAssembly))
             {
-                return LoadRuntimeAssembly(assemblyName, scriptRuntimeAssembly);
+                // There are several possible scenarios:
+                //  1. The assembly was found and the policy evaluator succeeded.
+                //     - Return the assembly.
+                //
+                //  2. The assembly was not found (meaning the policy evaluator wasn't able to run).
+                //     - Return null as there's not much else we can do. This will fail and come back to this context
+                //       through the fallback logic for another attempt. This is likely an error case so let it fail.
+                //
+                //  3. The assembly was found but the policy evaluator failed.
+                //     a. We did not adjust the requested assembly name via the deps file.
+                //        - This means that the DefaultLoadContext is looking for the correct version. Return null and let
+                //          it handle the load attempt.
+                //     b. We adjusted the requested assembly name via the deps file. If we return null the DefaultLoadContext would attempt to
+                //        load the original assembly version, which may be incorrect if we had to adjust it forward past the runtime's version.
+                //        i.  The adjusted assembly name is higher than the runtime's version.
+                //            - Do not trust the DefaultLoadContext to handle this as it may resolve to the runtime's assembly. Instead,
+                //              call LoadCore() to ensure the adjusted assembly is loaded.
+                //        ii. The adjusted assembly name is still lower than or equal to the runtime's version (this likely means
+                //            a lower major version).
+                //            - Return null and let the DefaultLoadContext handle it. It may come back here due to fallback logic, but
+                //              ultimately it will unify on the runtime version.
+
+                if (TryLoadRuntimeAssembly(assemblyName, scriptRuntimeAssembly, out assembly))
+                {
+                    // Scenarios 1 and 2(a).
+                    return assembly;
+                }
+                else
+                {
+                    if (assembly == null || !isNameAdjusted)
+                    {
+                        // Scenario 2 and 3(a).
+                        return null;
+                    }
+
+                    AssemblyName runtimeAssemblyName = AssemblyNameCache.GetName(assembly);
+                    if (assemblyName.Version > runtimeAssemblyName.Version)
+                    {
+                        // Scenario 3(b)(i).
+                        return LoadCore(assemblyName);
+                    }
+
+                    // Scenario 3(b)(ii).
+                    return null;
+                }
             }
 
             // If the assembly being requested matches a host assembly, we'll use
@@ -223,26 +269,54 @@ namespace Microsoft.Azure.WebJobs.Script.Description
             return LoadCore(assemblyName);
         }
 
-        private Assembly LoadRuntimeAssembly(AssemblyName assemblyName, ScriptRuntimeAssembly scriptRuntimeAssembly)
+        private bool TryAdjustRuntimeAssemblyFromDepsFile(AssemblyName assemblyName, out AssemblyName newAssemblyName)
+        {
+            newAssemblyName = assemblyName;
+
+            // It's possible for references to depend on different versions, and deps.json is the
+            // source of truth for which version should be resolved.
+            if (IsRuntimeAssembly(assemblyName) &&
+                TryGetDepsAsset(_depsAssemblies, assemblyName.Name, _currentRidFallback, out RuntimeAsset asset)
+                && asset.AssemblyVersion != assemblyName.Version)
+            {
+                // We'll be using the deps.json version
+                newAssemblyName = new AssemblyName
+                {
+                    Name = assemblyName.Name,
+                    Version = asset.AssemblyVersion
+                };
+
+                return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Loads the runtime's version of this assembly and runs it through the appropriate policy evaluator.
+        /// </summary>
+        /// <param name="assemblyName">The assembly name to load.</param>
+        /// <param name="scriptRuntimeAssembly">The policy evaluator details.</param>
+        /// <param name="runtimeAssembly">The runtime's assembly.</param>
+        /// <returns>true if the policy evaluation succeeded, otherwise, false.</returns>
+        private bool TryLoadRuntimeAssembly(AssemblyName assemblyName, ScriptRuntimeAssembly scriptRuntimeAssembly, out Assembly runtimeAssembly)
         {
             // If this is a private runtime assembly, return function dependency
             if (string.Equals(scriptRuntimeAssembly.ResolutionPolicy, PrivateDependencyResolutionPolicy))
             {
-                return LoadCore(assemblyName);
+                runtimeAssembly = LoadCore(assemblyName);
+                return true;
             }
 
             // Attempt to load the runtime version of the assembly based on the unification policy evaluation result.
-            if (TryLoadHostEnvironmentAssembly(assemblyName, allowPartialNameMatch: true, out Assembly assembly))
+            if (TryLoadHostEnvironmentAssembly(assemblyName, allowPartialNameMatch: true, out runtimeAssembly))
             {
                 var policyEvaluator = GetResolutionPolicyEvaluator(scriptRuntimeAssembly.ResolutionPolicy);
-
-                if (policyEvaluator.Invoke(assemblyName, assembly))
-                {
-                    return assembly;
-                }
+                return policyEvaluator.Invoke(assemblyName, runtimeAssembly);
             }
 
-            return null;
+            runtimeAssembly = null;
+            return false;
         }
 
         private bool TryLoadDepsDependency(AssemblyName assemblyName, out Assembly assembly)
@@ -251,11 +325,11 @@ namespace Microsoft.Azure.WebJobs.Script.Description
 
             if (_depsAssemblies != null &&
                 !IsRuntimeAssembly(assemblyName) &&
-                TryGetDepsAsset(_depsAssemblies, assemblyName.Name, _currentRidFallback, out string assemblyPath))
+                TryGetDepsAsset(_depsAssemblies, assemblyName.Name, _currentRidFallback, out RuntimeAsset asset))
             {
                 foreach (var probingPath in _probingPaths)
                 {
-                    string filePath = Path.Combine(probingPath, assemblyPath);
+                    string filePath = Path.Combine(probingPath, asset.Path);
                     if (File.Exists(filePath))
                     {
                         assembly = LoadFromAssemblyPath(filePath);
@@ -267,16 +341,16 @@ namespace Microsoft.Azure.WebJobs.Script.Description
             return assembly != null;
         }
 
-        internal static bool TryGetDepsAsset(IDictionary<string, RuntimeAsset[]> depsAssets, string assetName, List<string> ridFallbacks, out string assemblyPath)
+        internal static bool TryGetDepsAsset(IDictionary<string, RuntimeAsset[]> depsAssets, string assetName, List<string> ridFallbacks, out RuntimeAsset asset)
         {
-            assemblyPath = null;
+            asset = null;
 
-            if (depsAssets.TryGetValue(assetName, out RuntimeAsset[] assets))
+            if (depsAssets != null && depsAssets.TryGetValue(assetName, out RuntimeAsset[] assets))
             {
                 // If we have a single asset match, return it:
                 if (assets.Length == 1)
                 {
-                    assemblyPath = assets[0].Path;
+                    asset = assets[0];
                 }
                 else
                 {
@@ -286,21 +360,21 @@ namespace Microsoft.Azure.WebJobs.Script.Description
 
                         if (match != null)
                         {
-                            assemblyPath = match.Path;
+                            asset = match;
                             break;
                         }
                     }
 
                     // If we're unable to locate a matching asset based on the RID fallback probing,
                     // attempt to use a default/RID-agnostic asset instead
-                    if (assemblyPath == null)
+                    if (asset == null)
                     {
-                        assemblyPath = assets.FirstOrDefault(a => a.Rid == null)?.Path;
+                        asset = assets.FirstOrDefault(a => a.Rid == null);
                     }
                 }
             }
 
-            return assemblyPath != null;
+            return asset != null;
         }
 
         private bool TryLoadHostEnvironmentAssembly(AssemblyName assemblyName, bool allowPartialNameMatch, out Assembly assembly)
@@ -381,11 +455,11 @@ namespace Microsoft.Azure.WebJobs.Script.Description
 
             if (result == null && _nativeLibraries != null)
             {
-                if (TryGetDepsAsset(_nativeLibraries, assetFileName, _currentRidFallback, out string relativePath))
+                if (TryGetDepsAsset(_nativeLibraries, assetFileName, _currentRidFallback, out RuntimeAsset asset))
                 {
                     string basePath = _probingPaths[0];
 
-                    string nativeLibraryFullPath = Path.Combine(basePath, relativePath);
+                    string nativeLibraryFullPath = Path.Combine(basePath, asset.Path);
                     if (File.Exists(nativeLibraryFullPath))
                     {
                         result = nativeLibraryFullPath;

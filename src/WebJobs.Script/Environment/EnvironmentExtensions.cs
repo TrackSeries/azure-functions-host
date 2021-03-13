@@ -292,7 +292,7 @@ namespace Microsoft.Azure.WebJobs.Script
         public static bool IsKubernetesManagedHosting(this IEnvironment environment)
         {
             return !string.IsNullOrEmpty(environment.GetEnvironmentVariable(KubernetesServiceHost))
-                && !string.IsNullOrEmpty(environment.GetEnvironmentVariable(PodNamespace));
+            && !string.IsNullOrEmpty(environment.GetEnvironmentVariable(PodNamespace));
         }
 
         /// <summary>
@@ -318,6 +318,15 @@ namespace Microsoft.Azure.WebJobs.Script
         public static string GetAntaresComputerName(this IEnvironment environment)
         {
             return environment.GetEnvironmentVariableOrDefault(AntaresComputerName, string.Empty);
+        }
+
+        /// <summary>
+        /// Gets the computer name.
+        /// </summary>
+        public static bool IsLogicApp(this IEnvironment environment)
+        {
+            string appKind = environment.GetEnvironmentVariable(AppKind)?.ToLower();
+            return !string.IsNullOrEmpty(appKind) && appKind.Contains(ScriptConstants.WorkFlowAppKind);
         }
 
         /// <summary>

@@ -27,11 +27,11 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost.Management
             _environment = environment ?? throw new ArgumentNullException(nameof(environment));
         }
 
-        public async Task MountCifs(string connectionString, string contentShare, string targetPath)
+        public async Task<bool> MountCifs(string connectionString, string contentShare, string targetPath)
         {
             var sa = CloudStorageAccount.Parse(connectionString);
             var key = Convert.ToBase64String(sa.Credentials.ExportKey());
-            await SendAsync(new[]
+            HttpResponseMessage responseMessage = await SendAsync(new[]
             {
                 new KeyValuePair<string, string>(Operation, "cifs"),
                 new KeyValuePair<string, string>("host", sa.FileEndpoint.Host),
@@ -40,6 +40,8 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost.Management
                 new KeyValuePair<string, string>("contentShare", contentShare),
                 new KeyValuePair<string, string>("targetPath", targetPath),
             });
+
+            return responseMessage.IsSuccessStatusCode;
         }
 
         public Task MountBlob(string connectionString, string contentShare, string targetPath)
@@ -73,10 +75,33 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost.Management
             }
         }
 
+        public async Task NotifyHealthEvent(ContainerHealthEventType healthEventType, Type source, string details)
+        {
+            var healthEvent = new ContainerHealthEvent()
+            {
+                EventTime = DateTime.UtcNow,
+                EventType = healthEventType,
+                Details = details,
+                Source = source.ToString()
+            };
+
+            var healthEventString = JsonConvert.SerializeObject(healthEvent);
+
+            _logger.LogInformation($"Posting health event {healthEventString}");
+
+            var responseMessage = await SendAsync(new[]
+            {
+                new KeyValuePair<string, string>(Operation, "add-health-event"),
+                new KeyValuePair<string, string>("healthEvent", healthEventString),
+            });
+
+            _logger.LogInformation($"Posted health event status: {responseMessage.StatusCode}");
+        }
+
         private async Task PublishActivities(IEnumerable<ContainerFunctionExecutionActivity> activities)
         {
             // Log one of the activities being published for debugging.
-            _logger.LogDebug($"Publishing function execution activity {activities.Take(1)}");
+            _logger.LogDebug($"Publishing function execution activity {activities.FirstOrDefault()}");
 
             var operation = new[]
             {

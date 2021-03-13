@@ -54,35 +54,43 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost.Management
                 return null;
             }
 
-            string endpoint;
-            var msiEnabled = context.IsMSIEnabled(out endpoint);
+            var msiEnabled = context.IsMSIEnabled(out var endpoint);
 
             _logger.LogInformation($"MSI enabled status: {msiEnabled}");
 
             if (msiEnabled)
             {
-                using (_metricsLogger.LatencyEvent(MetricEventNames.LinuxContainerSpecializationMSIInit))
+                if (context.MSIContext == null)
                 {
-                    var uri = new Uri(endpoint);
-                    var address = $"http://{uri.Host}:{uri.Port}{ScriptConstants.LinuxMSISpecializationStem}";
-
-                    _logger.LogDebug($"Specializing sidecar at {address}");
-
-                    var requestMessage = new HttpRequestMessage(HttpMethod.Post, address)
+                    _logger.LogWarning("Skipping specialization of MSI sidecar since MSIContext was absent");
+                    await _meshServiceClient.NotifyHealthEvent(ContainerHealthEventType.Fatal, this.GetType(),
+                        "Could not specialize MSI sidecar");
+                }
+                else
+                {
+                    using (_metricsLogger.LatencyEvent(MetricEventNames.LinuxContainerSpecializationMSIInit))
                     {
-                        Content = new StringContent(JsonConvert.SerializeObject(context.MSIContext),
-                            Encoding.UTF8, "application/json")
-                    };
+                        var uri = new Uri(endpoint);
+                        var address = $"http://{uri.Host}:{uri.Port}{ScriptConstants.LinuxMSISpecializationStem}";
 
-                    var response = await _client.SendAsync(requestMessage);
+                        _logger.LogDebug($"Specializing sidecar at {address}");
 
-                    _logger.LogInformation($"Specialize MSI sidecar returned {response.StatusCode}");
+                        var requestMessage = new HttpRequestMessage(HttpMethod.Post, address)
+                        {
+                            Content = new StringContent(JsonConvert.SerializeObject(context.MSIContext),
+                                Encoding.UTF8, "application/json")
+                        };
 
-                    if (!response.IsSuccessStatusCode)
-                    {
-                        var message = $"Specialize MSI sidecar call failed. StatusCode={response.StatusCode}";
-                        _logger.LogError(message);
-                        return message;
+                        var response = await _client.SendAsync(requestMessage);
+
+                        _logger.LogInformation($"Specialize MSI sidecar returned {response.StatusCode}");
+
+                        if (!response.IsSuccessStatusCode)
+                        {
+                            var message = $"Specialize MSI sidecar call failed. StatusCode={response.StatusCode}";
+                            _logger.LogError(message);
+                            return message;
+                        }
                     }
                 }
             }
@@ -244,7 +252,8 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost.Management
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Assign failed");
+                _logger.LogError(ex, "Assign failed");
+                await _meshServiceClient.NotifyHealthEvent(ContainerHealthEventType.Fatal, GetType(), "Assign failed");
                 throw;
             }
             finally
@@ -277,7 +286,8 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost.Management
             }
             else if (!string.IsNullOrEmpty(assignmentContext.AzureFilesConnectionString))
             {
-                await _meshServiceClient.MountCifs(assignmentContext.AzureFilesConnectionString, assignmentContext.AzureFilesContentShare, "/home");
+                bool succeeded = await _meshServiceClient.MountCifs(assignmentContext.AzureFilesConnectionString, assignmentContext.AzureFilesContentShare, "/home");
+                _logger.LogInformation($"Mounting {EnvironmentSettingNames.AzureFilesContentShare} Success = {succeeded}");
             }
 
             // BYOS
@@ -319,7 +329,10 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost.Management
                             switch (storageInfoValue.Type)
                             {
                                 case AzureStorageType.AzureFiles:
-                                    await _meshServiceClient.MountCifs(storageConnectionString, storageInfoValue.ShareName, storageInfoValue.MountPath);
+                                    if (!await _meshServiceClient.MountCifs(storageConnectionString, storageInfoValue.ShareName, storageInfoValue.MountPath))
+                                    {
+                                        throw new Exception($"Failed to mount BYOS fileshare {storageInfoValue.Id}");
+                                    }
                                     break;
                                 case AzureStorageType.AzureBlob:
                                     await _meshServiceClient.MountBlob(storageConnectionString, storageInfoValue.ShareName, storageInfoValue.MountPath);

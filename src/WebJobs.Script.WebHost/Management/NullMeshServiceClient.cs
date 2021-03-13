@@ -18,9 +18,9 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost.Management
 
         public static NullMeshServiceClient Instance => _instance.Value;
 
-        public Task MountCifs(string connectionString, string contentShare, string targetPath)
+        public Task<bool> MountCifs(string connectionString, string contentShare, string targetPath)
         {
-            return Task.CompletedTask;
+            return Task.FromResult(true);
         }
 
         public Task MountBlob(string connectionString, string contentShare, string targetPath)
@@ -39,6 +39,11 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost.Management
         }
 
         public Task PublishContainerActivity(IEnumerable<ContainerFunctionExecutionActivity> activities)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task NotifyHealthEvent(ContainerHealthEventType healthEventType, Type source, string details)
         {
             return Task.CompletedTask;
         }

@@ -125,6 +125,8 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Managment
             _mockEnvironment.Setup(p => p.GetEnvironmentVariable(EnvironmentSettingNames.AzureWebsiteHostName)).Returns(testHostName);
             _mockEnvironment.Setup(p => p.GetEnvironmentVariable(EnvironmentSettingNames.SkipSslValidation)).Returns((string)null);
             _mockEnvironment.Setup(p => p.GetEnvironmentVariable(EnvironmentSettingNames.AzureWebJobsSecretStorageType)).Returns("blob");
+            _mockEnvironment.Setup(p => p.GetEnvironmentVariable(EnvironmentSettingNames.KubernetesServiceHost)).Returns("");
+            _mockEnvironment.Setup(p => p.GetEnvironmentVariable(EnvironmentSettingNames.PodNamespace)).Returns("");
 
             _hostNameProvider = new HostNameProvider(_mockEnvironment.Object);
 
@@ -646,6 +648,19 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Managment
             Assert.Equal(HttpMethod.Post, httpRequest.Method);
         }
 
+        [Theory]
+        [InlineData("KUBERNETES_SERVICE_HOST", "http://k8se-build-service.k8se-system.svc.cluster.local:8181/operations/settriggers")]
+        [InlineData(null, "https://appname.azurewebsites.net/operations/settriggers")]
+        public void Managed_Kubernetes_Environment_SyncTrigger_Url_Validation(string kubernetesServiceHost, string expectedSyncTriggersUri)
+        {
+            _mockEnvironment.Setup(p => p.GetEnvironmentVariable(EnvironmentSettingNames.KubernetesServiceHost)).Returns(kubernetesServiceHost);
+            _mockEnvironment.Setup(p => p.GetEnvironmentVariable(EnvironmentSettingNames.PodNamespace)).Returns("POD_NAMESPACE");
+
+            var httpRequest = _functionsSyncManager.BuildSetTriggersRequest();
+            Assert.Equal(expectedSyncTriggersUri, httpRequest.RequestUri.AbsoluteUri);
+            Assert.Equal(HttpMethod.Post, httpRequest.Method);
+        }
+
         private static HttpClient CreateHttpClient(MockHttpHandler httpHandler)
         {
             return new HttpClient(httpHandler);
@@ -703,6 +718,9 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Managment
             fileSystem.SetupGet(f => f.Directory).Returns(dirBase.Object);
             dirBase.Setup(d => d.Exists(rootPath)).Returns(true);
             dirBase.Setup(d => d.Exists(Path.Combine(rootPath, "bin"))).Returns(true);
+            dirBase.Setup(d => d.Exists(Path.Combine(rootPath, @"function1"))).Returns(true);
+            dirBase.Setup(d => d.Exists(Path.Combine(rootPath, @"function2"))).Returns(true);
+            dirBase.Setup(d => d.Exists(Path.Combine(rootPath, @"function3"))).Returns(true);
             dirBase.Setup(d => d.EnumerateDirectories(rootPath))
                 .Returns(() =>
                 {
@@ -766,7 +784,6 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Managment
     }
   ]
 }";
-
             fileBase.Setup(f => f.Exists(Path.Combine(rootPath, @"function1\function.json"))).Returns(true);
             fileBase.Setup(f => f.Exists(Path.Combine(rootPath, @"function1\main.py"))).Returns(true);
             fileBase.Setup(f => f.ReadAllText(Path.Combine(rootPath, @"function1\function.json"))).Returns(_function1);
