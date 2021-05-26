@@ -17,6 +17,7 @@ using Microsoft.Azure.WebJobs.Script.WebHost.DependencyInjection;
 using Microsoft.Azure.WebJobs.Script.WebHost.Diagnostics;
 using Microsoft.Azure.WebJobs.Script.WebHost.Filters;
 using Microsoft.Azure.WebJobs.Script.WebHost.Management;
+using Microsoft.Azure.WebJobs.Script.WebHost.Management.LinuxSpecialization;
 using Microsoft.Azure.WebJobs.Script.WebHost.Metrics;
 using Microsoft.Azure.WebJobs.Script.WebHost.Middleware;
 using Microsoft.Azure.WebJobs.Script.WebHost.Security.Authorization;
@@ -90,7 +91,7 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost
             services.AddLinuxContainerServices();
 
             // ScriptSettingsManager should be replaced. We're setting this here as a temporary step until
-            // broader configuaration changes are made:
+            // broader configuration changes are made:
             services.AddSingleton<ScriptSettingsManager>();
             services.AddSingleton<IEventGenerator>(p =>
             {
@@ -106,7 +107,7 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost
                 }
                 else if (environment.IsKubernetesManagedHosting())
                 {
-                    return new KubernetesEventGenerator(environment);
+                    return new KubernetesEventGenerator();
                 }
                 else
                 {
@@ -169,6 +170,9 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost
 
             services.TryAddSingleton<IDependencyValidator, DependencyValidator>();
             services.TryAddSingleton<IJobHostMiddlewarePipeline>(s => DefaultMiddlewarePipeline.Empty);
+
+            // Add AzureStorageProvider to WebHost (also needed for ScriptHost)
+            services.AddAzureStorageProvider();
         }
 
         private static void AddStandbyServices(this IServiceCollection services)
@@ -267,6 +271,10 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost
 
                 return NullLinuxContainerActivityPublisher.Instance;
             });
+
+            services.AddSingleton<IRunFromPackageHandler, RunFromPackageHandler>();
+            services.AddSingleton<IUnZipHandler, UnZipHandler>();
+            services.AddSingleton<IBashCommandHandler, BashCommandHandler>();
         }
 
         private static IServiceCollection ConfigureOptionsWithChangeTokenSource<TOptions, TOptionsSetup, TOptionsChangeTokenSource>(this IServiceCollection services)

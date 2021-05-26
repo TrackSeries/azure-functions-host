@@ -1,18 +1,21 @@
-﻿var invocationCount = 0;
+﻿var errorString = 'An error occurred';
+var maxRetries = 4;
 
 module.exports = async function (context, req) {
-    const reset = req.query.reset;
-    invocationCount = reset ? 0 : invocationCount
+    var retryContext = context.executionContext.retryContext;
 
-    context.log('JavaScript HTTP trigger function processed a request.invocationCount: ' + invocationCount);
+    if (retryContext.maxRetryCount != maxRetries || (retryContext.retryCount > 0 && !retryContext.exception.message.includes(errorString))) {
+        context.res = {
+            status: 500
+        };
+    } else {
+        context.log('JavaScript HTTP trigger function processed a request. retryCount: ' + retryContext.retryCount);
 
-    invocationCount = invocationCount + 1;
-    const responseMessage = "invocationCount: " + invocationCount;
-    if (invocationCount < 4) {
-        throw new Error('An error occurred');
+        if (retryContext.retryCount < maxRetries) {
+            throw new Error(errorString);
+        }
+        context.res = {
+            body: 'retryCount: ' + retryContext.retryCount
+        };
     }
-    context.res = {
-        // status: 200, /* Defaults to 200 */
-        body: responseMessage
-    };
 }

@@ -24,12 +24,14 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Workers
     public class ScriptInvocationContextExtensionsTests : IDisposable
     {
         private readonly ILoggerFactory _loggerFactory = MockNullLoggerFactory.CreateLoggerFactory();
+        private readonly IEnvironment _testEnvironment;
         private readonly IMemoryMappedFileAccessor _mapAccessor;
         private readonly ISharedMemoryManager _sharedMemoryManager;
 
         public ScriptInvocationContextExtensionsTests()
         {
             ILogger<MemoryMappedFileAccessor> logger = NullLogger<MemoryMappedFileAccessor>.Instance;
+            _testEnvironment = new TestEnvironment();
 
             if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
@@ -37,8 +39,9 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Workers
             }
             else
             {
-                _mapAccessor = new MemoryMappedFileAccessorUnix(logger);
+                _mapAccessor = new MemoryMappedFileAccessorUnix(logger, _testEnvironment);
             }
+
             _sharedMemoryManager = new SharedMemoryManager(_loggerFactory, _mapAccessor);
         }
 
@@ -305,6 +308,43 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Workers
             Assert.Same(resultHttp, result.TriggerMetadata["$request"]);
             Assert.True(result.TriggerMetadata.ContainsKey("headers"));
             Assert.True(result.TriggerMetadata.ContainsKey("query"));
+        }
+
+        [Fact]
+        public void TestSetRetryContext_NoRetry()
+        {
+            ScriptInvocationContext context = new ScriptInvocationContext()
+            {
+                ExecutionContext = new ExecutionContext()
+            };
+            InvocationRequest request = new InvocationRequest();
+            Grpc.ScriptInvocationContextExtensions.SetRetryContext(context, request);
+
+            Assert.Null(request.RetryContext);
+        }
+
+        [Fact]
+        public void TestSetRetryContext_Retry()
+        {
+            ScriptInvocationContext context = new ScriptInvocationContext()
+            {
+                ExecutionContext = new ExecutionContext()
+                {
+                    RetryContext = new Host.RetryContext()
+                    {
+                        RetryCount = 1,
+                        MaxRetryCount = 2,
+                        Exception = new Exception("test")
+                    }
+                }
+            };
+            InvocationRequest request = new InvocationRequest();
+            Grpc.ScriptInvocationContextExtensions.SetRetryContext(context, request);
+
+            Assert.NotNull(request.RetryContext);
+            Assert.Equal(request.RetryContext.RetryCount, 1);
+            Assert.Equal(request.RetryContext.MaxRetryCount, 2);
+            Assert.NotNull(request.RetryContext.Exception);
         }
 
         /// <summary>

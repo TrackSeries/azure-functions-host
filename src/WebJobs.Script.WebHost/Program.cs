@@ -40,14 +40,14 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost
             return AspNetCore.WebHost.CreateDefaultBuilder(args)
                 .ConfigureKestrel(o =>
                 {
-                    o.Limits.MaxRequestBodySize = 104857600;
+                    o.Limits.MaxRequestBodySize = ScriptConstants.DefaultMaxRequestBodySize;
                 })
                 .UseSetting(WebHostDefaults.EnvironmentKey, Environment.GetEnvironmentVariable(EnvironmentSettingNames.EnvironmentNameKey))
                 .ConfigureServices(services =>
                 {
                     services.Configure<IISServerOptions>(o =>
                     {
-                        o.MaxRequestBodySize = 104857600;
+                        o.MaxRequestBodySize = ScriptConstants.DefaultMaxRequestBodySize;
                     });
                     services.Replace(ServiceDescriptor.Singleton<IServiceProviderFactory<IServiceCollection>>(new WebHostServiceProviderFactory()));
                 })
@@ -87,8 +87,6 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost
         {
             if (SystemEnvironment.Instance.IsLinuxConsumption())
             {
-                // Linux containers always start out in placeholder mode
-                SystemEnvironment.Instance.SetEnvironmentVariable(EnvironmentSettingNames.AzureWebsitePlaceholderMode, "1");
                 AppDomain.CurrentDomain.UnhandledException += CurrentDomainOnUnhandledExceptionInLinuxConsumption;
             }
             else if (SystemEnvironment.Instance.IsLinuxAppService())
